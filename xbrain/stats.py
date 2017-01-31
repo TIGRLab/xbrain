@@ -15,7 +15,7 @@ from scipy import linalg
 from scipy.stats import mode
 import pandas as pd
 from sklearn import preprocessing
-from sklearn import grid_search
+from sklearn.model_selection import GridSearchCV
 from sklearn.linear_model import LinearRegression
 from sklearn.linear_model import LogisticRegression
 from sklearn.linear_model import Lasso
@@ -232,7 +232,7 @@ def cv_loop(model_clf, hyperparams, X_train, y_train):
     Uses cross validation to do a grid search on the hyperparameter dictionary
     input.
     """
-    clf = grid_search.GridSearchCV(model_clf, hyperparams, cv=3, verbose=0)
+    clf = GridSearchCV(model_clf, hyperparams, cv=5, verbose=1)
     clf.fit(X_train, y_train)
 
     return clf
@@ -245,7 +245,7 @@ def make_classes(y):
     return(le.transform(y))
 
 
-def classify(X_train, X_test, y_train, y_test, model='Logistic'):
+def classify(X_train, X_test, y_train, y_test, model='RFC'):
     """
     Trains the selected classifier once on the submitted training data, and
     compares the predicted outputs of the test data with the real labels.
@@ -257,6 +257,8 @@ def classify(X_train, X_test, y_train, y_test, model='Logistic'):
         raise Exception('X_train shape {} does not equal y_train shape {}'.format(X_train.shape[0], y_train.shape[0]))
     if X_test.shape[0] != y_test.shape[0]:
         raise Exception('X_test shape {} does not equal y_test shape {}'.format(X_test.shape[0], y_test.shape[0]))
+
+    n_features = X_train.shape[1]
 
     hp_dict = collections.defaultdict(list)
     hp_mode = {}
@@ -289,13 +291,21 @@ def classify(X_train, X_test, y_train, y_test, model='Logistic'):
         continuous = False
     elif model == 'RFR':
         model_clf = RandomForestRegressor(n_jobs=6)
-        hyperparams = {'n_estimators':[50,100,200], 'min_samples_split':[5, 10, 20,50]}
+        hyperparams =  {'class_weight': ['balanced_subsample'],
+                        'n_estimators':[100,5000,1000],
+                        'min_samples_split':[int(round(n_features*0.1)),
+                                            int(round(n_features*0.2)),
+                                            int(round(n_features*0.5))]}
         scale_data = False
         feat_imp = True
         continuous = True
     elif model == 'RFC':
         model_clf = RandomForestClassifier(n_jobs=6)
-        hyperparams = {'n_estimators':[50,100,200], 'min_samples_split':[5, 10, 20,50]}
+        hyperparams =  {'class_weight': ['balanced_subsample'],
+                        'n_estimators':[100, 500, 1000],
+                        'min_samples_split':[int(round(n_features*0.1)),
+                                            int(round(n_features*0.2)),
+                                            int(round(n_features*0.5))]}
         scale_data = False
         feat_imp = True
         continuous = False

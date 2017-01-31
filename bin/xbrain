@@ -6,7 +6,7 @@ Usage:
     xbrain [options] <database>
 
 Arguments:
-    <database>      a .csv file containing MRI data (X) and non-neural data (Y)
+    <database>      a .csv file containing MRI data (X) and non-neural data (y)
 
 Options:
     --timeseries    A comma-seperated list of timeseries .csv (2D) predictors.
@@ -14,16 +14,13 @@ Options:
     --statmaps      A comma-seperated list of statmap .nii.gz (3D) predictors.
     --predict       A comma-seperated list of column names in database to predict.
     --roi_mask      A ROI .nii.gz file with the same dimensions as all input statmaps and the same number of non-zero ROIs as there are unique timeseries.
-    --pct_template  Proportion (0 < p < 1) of training population used to generate template timeseries [default: 0.1]
-    --k             Number of folds done for the inner loop cross-validation [default: 5]
-    --n_features    Number of tagret features per subject. If the number of raw features is larger than this number, uses PCA to reduce the data to this number.
-    --target-mode   'cutoff' or 'group' [default: 'cutoff']
+    --k             Number of folds done for outer loop cross-validation [default: 10]
+    --n_features    Number of tagret features per sample. If the number of raw features is larger than this number, uses PCA to reduce the data to this number.
     --target-cutoff Percentile cutoff (0 < p < 0.5) to seperate the low and high y score group [default: 0.5]
-    --target-group  For classification tasks, draw the template from this group [default: 1]
-    --two-template  Use a two template model: contrast high (group = 1) and low (group = 0) y scores.
+    --target-group  Draw the template from this group [default: 1]
+    --two-template  If defined, features are the difference between target-group and this group. [default: -1]
     --pre-test      Run a diagnostic pre-test (MDMR) relating the non-neural scores to the nerual features.
     --debug         Verbose outputs.
-    --plot          Print out diagnostic plots to the home directory.
 
 DETAILS
 
@@ -34,43 +31,26 @@ variables of interest (Y). For example, demographics (age, sex), cognitive
 scores (IQ, TASIT), or clinical variables (medications taken, number of hospital
 visits in the last year).
 
-To validate this approach, the members of the template must be shuffled, as well
-as the comparison group. These form the outer and inner loop, respectively.
+** outer loop: stratified sample k fold cross validation**
 
-**outer loop: template population**
+The sample population is split int K distinct folds (e.g., --k=5, or 5 folds).
+This requires a large sample (< 70 subjects preferred), but k-fold cross
+validation is more robust to major outliers, which are likely in heterogenous
+psychiatric populations. Briefly, K-fold cross validation splits the population
+into a test set (n/K) and training set (the remainder). For each fold,
+cross-brain correlations are calculated for each individual against the
+template drawn from the training population only, so there is complete
+independence between the test set and the template population. The training data
+is used to train a classifier to predict the non-neural variable of interest
+using these cross brain correlations. The performance of the model is evaluated
+against the test set, and performance measures are averaged across all folds.
 
-The template population is first defined as a small proportion of the total
-sample (e.g., --pct_template=0.1, or 10 %) with values close to the median non-
-neural score of interest. Therefore, the template represents a 'normal'
-participant with respect to that variable. For each iteration of the outer loop,
-a random subsample (e.g., --p=0.5, or 50%) of the total held-out population
-is used to construct a single template to compare with the participants in the
-inner loop. This ensures that the results generalize across multiple templates,
-and are not template specific. This outer loop is repeated a set number of times
-(e.g., --n=10 times).
+**inner loop: hyperparamater cross validation**
 
-For each template, the average time-series is calculated across all ROIs to
-generate a template set of timeseries.
+5 fold cross validation is done to test all submitted hyperperameters on splits
+of the training data. The best model is brought forward for testing.
 
-Due to a 'large' MRI population being in the 100s of subjects, and therefore a
-template population can only be assumed to be 10-50 people, monte-carlo
-simulations are used instead of K-fold validation.
-
-**inner loop: sample**
-
-The sample population is defined as K distinct folds (e.g., --k=5, or 5 folds)
-of the remaining population, because we have more data at our disposal and k-
-fold cross validation is more robust to major outliers, which are likely in
-heterogenous psychiatric populations. Briefly, K-fold cross validation splits
-the population into a test set (n/K) and training set (the remainder). For each
-fold, cross-brain correlations are calculated for each individual against the
-template, and the training data is used to train a random forest regression
-model to predict the non-neural variable of interest. The performance of the
-model is evaluated against the test set, and performance measures are averaged
-across all folds.
-
-These averaged measures are further averaged across all outer loops to assess
-the overall stability of the algorithm.
+The grid search for each model is defined in xbrain.stats.classify.
 
 **features**
 
@@ -100,8 +80,7 @@ import numpy as np
 import scipy as sp
 from scipy.stats import sem
 import pandas as pd
-from sklearn.cross_validation import KFold
-from sklearn.cross_validation import StratifiedKFold
+from sklearn.model_selection import StratifiedKFold
 
 import xbrain.docopt as docopt
 import xbrain.utils as utils
@@ -118,6 +97,32 @@ def assert_columns(db, columns):
         logger.error('not all columns {} found'.format(columns))
         sys.exit(1)
 
+def pre_test(db, timeseries, predict):
+    """
+    use MDMR to detect relationship between cognitive variables and MRI data.
+    Cluster brain data, and show the mean cognitive score in each cluster. Good
+    v scores are ~ 0.1, or 10%. If there are multiple predictors, uses PCA to
+    reduce the feature space to 1D for plotting.
+    """
+    logger.info('pre-test: detecting gross relationship between neural and cognitive data')
+    ts = corr.get_template_ts(db, timeseries)
+    X = corr.calc_xbrain(ts, db, timeseries)
+    y = utils.gather_dv(db, predict)
+    F, F_null, v = stats.mdmr(y.T, X)
+    thresholds = stats.sig_cutoffs(F_null, two_sided=False)
+
+    if F > thresholds[1]:
+        logger.info('pre-test: relationship detected: F={} > {}, variance explained={}'.format(F, thresholds[1], v))
+    else:
+        logger.warn('pre-test: no relationship detected, variance explained={}'.format(v))
+
+    # reduce predictors to 1D for plotting
+    if len(y.shape) == 2 and y.shape[0] > 1:
+        y = stats.pca_reduce(y)
+
+    clst = stats.cluster(X, y, plot=HOME)
+    sys.exit()
+
 def main():
     #arguments = docopt(__doc__)
     #database      = arguments['<database>']
@@ -126,38 +131,32 @@ def main():
     #statmaps      = arguments['--statmaps']
     #predict       = arguments['--predict']
     #roi_mask      = arguments['--roi_mask']
-    #pct_template  = float(arguments['--pct_template'])
     #k             = int(arguments['--k'])
     #n_features    = arguments['--n-features']
-    #target_mode   = arguments['--target-mode']
     #target_cutoff = float(arguments['--cutoff'])
     #target_group  = int(arguments['--target-group'])
-    #two_template  = arguments['--two-template']
+    #two_template  = int(arguments['--two-template'])
     #pre_test      = arguments['--pre-test']
     #debug         = arguments['--debug']
-    #plot          = arguments['--plot']
 
     global HOME
 
     # for testing
     database = '/projects/jviviano/data/xbrain/assets/database_xbrain.csv'
-    timeseries = 'ts_imi'
+    timeseries = 'ts_imi,ts_ea2'
     statmaps = None
     connectivity = None
     #predict = 'Part1_TotalCorrect,Part2_TotalCorrect,Part3_TotalCorrect,scog_er40_cr_columnpcr_value,scog_er40_crt_columnqcrt_value'
-    predict = 'Part1_TotalCorrect,Part2_TotalCorrect,Part3_TotalCorrect'
-    #predict = 'Diagnosis'
+    #predict = 'Part1_TotalCorrect,Part2_TotalCorrect,Part3_TotalCorrect'
+    predict = 'Diagnosis'
     roi_mask = None
-    pct_template = 0.50
-    k = 5
-    n_features = 10
-    target_mode = 'cutoff'
-    target_cutoff = 0.2
+    k = 10
+    n_features = None
+    target_cutoff = 0.3
     target_group = 1
-    two_template = False
+    two_template = -1
     pre_test = False
     debug = True
-    plot = False
 
     logger.info('starting')
     if debug:
@@ -171,30 +170,17 @@ def main():
         sys.exit(1)
 
     # check and format inputs
-    if not utils.is_probability(pct_template):
-        logger.error('proportion of population to be template invalid: {} (0 < p < 1)'.format(pct_template))
+    if not utils.is_probability(target_cutoff):
+        logger.error('group target_cutoff percentile invalid for one group analysis: {} (0 < p < 1)'.format(target_cutoff))
         sys.exit(1)
 
-    if target_mode != 'group' and target_mode != 'cutoff':
-        logger.error('target_mode {} invalid (should be either "group" or "cutoff"'.format(target_mode))
-        sys.exit(1)
-
-    if target_mode == 'group' and two_template:
-        logger.info('group target mode is not implemented for two_template analysis, reverting to single template')
-        two_template = False
-
-    if two_template:
-        if not utils.is_probability(target_cutoff*2):
-            logger.error('group target_cutoff percentile invalid for two group analysis: {} (0 < p < 0.5)'.format(target_cutoff))
-            sys.exit(1)
-    else:
-        if not utils.is_probability(target_cutoff):
-            logger.error('group target_cutoff percentile invalid for one group analysis: {} (0 < p < 1)'.format(target_cutoff))
+    if two_template > -1:
+        if two_template == target_group:
+            logger.error('two_template group {} should be different than the target group {}'.format(two_template, target_group))
             sys.exit(1)
 
     if n_features:
         n_features = int(n_features)
-
 
     # check all defined database columns
     columns = []
@@ -218,101 +204,75 @@ def main():
     db = db.dropna(axis=0)
     logger.debug('clean rows in database: {}/{}'.format(len(db), n_pre))
 
-    # pre-test: use MDMR to detect relationship between cognitive variables and
-    # brain data. Cluster brain data, and show the mean cognitive score in each
-    # cluster. Good v scores are ~ 0.1, or 10%.
     if pre_test:
-        logger.debug('pre-test: detecting gross relationship between neural and cognitive data')
-        ts = corr.get_template_ts(db, timeseries)
-        X = corr.calc_xbrain(ts, db, timeseries)
-        y = utils.gather_dv(db, predict)
-        F, F_null, v = stats.mdmr(y.T, X)
-        thresholds = stats.sig_cutoffs(F_null, two_sided=False)
-
-        if F > thresholds[1]:
-            logger.info('pre-test: relationship detected: F={} > {}, variance explained={}'.format(F, thresholds[1], v))
-        else:
-            logger.warn('pre-test: no relationship detected, variance explained={}'.format(v))
-
-        if plot:
-            y = stats.pca_reduce(y)
-            clst = stats.cluster(X, y, plot=HOME)
-        sys.exit()
+        pre_test(db, timeseries, predict)
 
     logger.debug('generating dependent variable vector y')
     y = utils.gather_dv(db, predict)
     if len(y.shape) == 2 and y.shape[0] > 1:
-        logger.info('using PCA to reduce {} dvs down to 1 component'.format(y.shape[0]))
+        logger.info('using PCA to reduce {} dvs in y down to 1 component'.format(y.shape[0]))
         y = stats.pca_reduce(y)
-
-    # add a column with the (potentially aggregated) y scores, before thresholds
-    y_uid = ''.join(random.choice(string.ascii_uppercase) for _ in range(10))
-    db[y_uid] = y
 
     # split into groups if the data is continuous
     if len(np.unique(y)) > 10:
-        logger.debug('splitting dv into two groups: {} percentile cutoff'.format(target_cutoff))
+        logger.info('splitting y into two groups: {} percentile cutoff'.format(target_cutoff))
         y = utils.make_dv_groups(y, target_cutoff)
 
-    # ensure target_group is one of the available groups in y
-    if target_group not in np.unique(y):
+    y = stats.make_classes(y)
+
+    # add a column with the preprocessed y groups
+    y_uid = ''.join(random.choice(string.ascii_uppercase) for _ in range(10))
+    db[y_uid] = y
+
+    # ensure target_group, two_template group is one of the groups in y
+    if target_group not in y:
         logger.error('target group {} not in y: {}'.format(target_group, np.unique(y)))
         sys.exit(1)
 
-    # stratified k-fold cross validation: split into train and test sets
-    y_labels = stats.make_classes(y)
-    logger.debug('stratified kfold cross-validation')
-    kf = StratifiedKFold(y_labels, n_folds=k)
-
-    # when I put in the regression / classification flag, use this
-    #logger.debug('kfold cross-validation')
-    #kf = KFold(len(y), n_folds=kfold)
+    if two_template > -1:
+        if two_template not in y:
+            logger.error('two template group {} not in y: {}'.format(two_template, np.unique(y)))
+            sys.exit(1)
 
     # stores outputs across folds
     r_train, r_test, R2_train, R2_test, MSE_train, MSE_test = [], [], [], [], [], []
 
+    # stratified k-fold cross validation: split into train and test sets
     logger.info('Outer Loop: {} fold cross validation'.format(k))
-    for train_idx, test_idx in kf:
+    kf = StratifiedKFold(n_splits=k, shuffle=True)
+    for train_idx, test_idx in kf.split(np.zeros(len(y)), y):
 
         # split the outcome variables into train and test groups
         y_train = y[train_idx]
         y_test = y[test_idx]
 
-        # calculate the size of each template
-        n_template = np.round(db.iloc[train_idx].shape[0] * pct_template)
-        logger.debug('n template/n training pop: {}/{}'.format(n_template, len(train_idx)))
+        # calculate X from a training sample template
+        logger.debug('calculating template 1: group {}'.format(target_group))
+        template_1 = corr.find_template(db.iloc[train_idx], y_uid, timeseries, group=target_group)
+        X = corr.calc_xbrain(template_1, db, timeseries)
 
-        # calculate X from a template generated from the training sample
-        if two_template:
-            logger.info('two template analysis ({}th percentile, {}th percentile)'.format(target_cutoff, 1-target_cutoff))
-            ts_hi = corr.find_template(db.iloc[train_idx], np.ceil(n_template/2), y_uid, timeseries, percentile=target_cutoff*100)
-            ts_lo = corr.find_template(db.iloc[train_idx], np.ceil(n_template/2), y_uid, timeseries, percentile=(1-target_cutoff)*100)
-            X_hi = corr.calc_xbrain(ts, db, timeseries)
-            X_lo = corr.calc_xbrain(ts, db, timeseries)
-            X = X_hi - X_lo
-        else:
-            if target_mode == 'cutoff':
-                logger.info('one template analysis ({}th percentile)'.format(target_cutoff))
-                ts = corr.find_template(db.iloc[train_idx], n_template, y_uid, timeseries, percentile=(1-target_cutoff)*100)
-            else:
-                logger.info('one template analysis (target group={})'.format(target_group))
-                ts = corr.find_template(db.iloc[train_idx], n_template, y_uid, timeseries, group=target_group)
-            X = corr.calc_xbrain(ts, db, timeseries)
+        if two_template > -1:
+            logger.debug('calculating template 2: group {}'.format(two_template))
+            template_2 = corr.find_template(db.iloc[train_idx], y_uid, timeseries, group=two_template)
+            X2 = corr.calc_xbrain(template_2, db, timeseries)
+            logger.debug('two template analysis: group {} - group {}'.format(target_group, two_template))
+            X = X - X2
 
         # remove nonsense values from X
         X[np.isnan(X)] = 0
         X[np.isinf(X)] = 0
 
+        # if desired, compress the feature matrix X
         if n_features:
             if X.shape[1] > n_features:
                 # double transpose required to reduce over features, not samples
                 X = stats.pca_reduce(X.T, n=n_features).T
 
-        print(X.shape)
-
         # split X into test and train groups
         X_train = X[train_idx, :]
         X_test  = X[test_idx, :]
+
+        corr.plot_X(X_train, HOME, title='test-vs-train', X2=X_test)
 
         # run the classifier
         try:
