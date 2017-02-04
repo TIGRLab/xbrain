@@ -10,20 +10,18 @@ import string
 import numpy as np
 import scipy as sp
 import scipy.cluster.hierarchy as sch
+from scipy.spatial.distance import pdist, squareform
 from scipy import stats
 from scipy import linalg
 from scipy.stats import mode
 import pandas as pd
 from sklearn import preprocessing
-from sklearn.model_selection import GridSearchCV
-from sklearn.linear_model import LinearRegression
+
+from sklearn.model_selection import RandomizedSearchCV
 from sklearn.linear_model import LogisticRegression
-from sklearn.linear_model import Lasso
-from sklearn.svm import SVR
 from sklearn.svm import SVC
-from sklearn.ensemble import RandomForestRegressor
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import mean_squared_error as mse
+from sklearn.metrics import classification_report, accuracy_score, f1_score, roc_auc_score
 
 import matplotlib
 matplotlib.use('Agg')   # Force matplotlib to not use any Xwindows backend
@@ -63,9 +61,9 @@ def gowers_matrix(D):
     """Calculates Gower's centered matrix from a distance matrix."""
     utils.assert_square(D)
 
-    n = float(D.shape[0])
+    n = D.shape[0]
     o = np.ones((n, 1))
-    I = np.identity(n) - (1/n)*o.dot(o.T)
+    I = np.identity(n) - (1/float(n))*o.dot(o.T)
     A = -0.5*(np.square(D))
     G = I.dot(A).dot(I)
 
@@ -137,7 +135,7 @@ def variance_explained(H, G):
     return((np.trace(H.dot(G).dot(H))) / np.trace(G))
 
 
-def mdmr(X, Y):
+def mdmr(X, Y, method='corr'):
     """
     Multvariate regression analysis of distance matricies: regresses variables
     of interest X (behavioural) onto a matrix representing the similarity of
@@ -151,8 +149,13 @@ def mdmr(X, Y):
         raise Exception('X is not full rank:\ndimensions = {}'.format(X.shape))
 
     X = standardize(X)   # mean center and Z-score all cognitive variables
-    R = np.corrcoef(Y)   # correlation distance between each cross-brain correlation vector
-    D = r_to_d(R)        # distance matrix of correlation matrix
+
+    if method == 'corr':
+        R = np.corrcoef(Y)   # correlation distance between each cross-brain correlation vector
+        D = r_to_d(R)        # distance matrix of correlation matrix
+    elif method == 'euclidean':
+        D = squareform(pdist(Y, 'euclidean'))
+
     G = gowers_matrix(D) # centered distance matrix (connectivity similarities)
     H = hat_matrix(X)    # hat matrix of regressors (cognitive variables)
     F = calc_F(H, G)     # F test of relationship between regressors and distance matrix
@@ -227,17 +230,6 @@ def pca_reduce(X, n=1):
     return(recon)
 
 
-def cv_loop(model_clf, hyperparams, X_train, y_train):
-    """
-    Uses cross validation to do a grid search on the hyperparameter dictionary
-    input.
-    """
-    clf = GridSearchCV(model_clf, hyperparams, cv=5, verbose=1)
-    clf.fit(X_train, y_train)
-
-    return clf
-
-
 def make_classes(y):
     """transforms label values for classification"""
     le = preprocessing.LabelEncoder()
@@ -261,54 +253,32 @@ def classify(X_train, X_test, y_train, y_test, model='RFC'):
     n_features = X_train.shape[1]
 
     hp_dict = collections.defaultdict(list)
-    hp_mode = {}
     r_train, r_test, R2_train, R2_test, MSE_train, MSE_test = [], [], [], [], [], []
 
     # for testing various models, includes grid search settings
-    if model == 'LR_L1':
-        model_clf = Lasso()
-        hyperparams = {'alpha':[0.2, 0.1, 0.05, 0.01]}
-        scale_data = True
-        feat_imp = True
-        continuous = True
-    elif model == 'Logistic':
+    if model == 'Logistic':
         model_clf = LogisticRegression()
         hyperparams = {'C': [0.2, 0.6, 0.8, 1, 1.2] }
         scale_data = True
         feat_imp = False
-        continuous = False
-    elif model == 'SVR':
-        model_clf = SVR()
-        hyperparams = {'kernel':['linear','rbf'], 'C':[1,10,25]}
-        scale_data = True
-        feat_imp = True
-        continuous = True
     elif model == 'SVC':
         model_clf = SVC()
-        hyperparams = {'kernel':['linear','rbf'], 'C':[1,10,25]}
+        hyperparams = {'kernel':['linear','rbf'],
+                       'C': stats.lognorm(10, loc=0, scale=2**3),
+                       'gamma': stats.lognorm(10, loc=0, scale=2**3)}
         scale_data = True
         feat_imp = True
-        continuous = False
-    elif model == 'RFR':
-        model_clf = RandomForestRegressor(n_jobs=6)
-        hyperparams =  {'class_weight': ['balanced_subsample'],
-                        'n_estimators':[100,5000,1000],
-                        'min_samples_split':[int(round(n_features*0.1)),
-                                            int(round(n_features*0.2)),
-                                            int(round(n_features*0.5))]}
-        scale_data = False
-        feat_imp = True
-        continuous = True
     elif model == 'RFC':
         model_clf = RandomForestClassifier(n_jobs=6)
         hyperparams =  {'class_weight': ['balanced_subsample'],
-                        'n_estimators':[100, 500, 1000],
-                        'min_samples_split':[int(round(n_features*0.1)),
-                                            int(round(n_features*0.2)),
-                                            int(round(n_features*0.5))]}
+                        'n_estimators':[10],
+                        'max_depth': [None, 3],
+                        'max_features': [None],
+                        'min_samples_split': stats.randint(int(round(n_features*0.05)), int(round(n_features*0.3))),
+                        'min_samples_leaf': stats.randint(int(round(n_features*0.05)), int(round(n_features*0.3))),
+                        'criterion': ['gini', 'entropy']}
         scale_data = False
         feat_imp = True
-        continuous = False
     else:
         logger.error('invalid model type {}'.format(model))
         sys.exit(1)
@@ -317,33 +287,25 @@ def classify(X_train, X_test, y_train, y_test, model='RFC'):
         X_train = preprocessing.scale(X_train)
         X_test = preprocessing.scale(X_test)
 
-    logger.debug('Innermost Loop: CV of hyperparameters for this fold')
-    clf = cv_loop(model_clf, hyperparams, X_train, y_train) # returns 1 best clf
+    # perform randomized hyperparameter search to find optimal settings
+    logger.debug('Inner Loop: CV of hyperparameters for this fold')
+    clf = RandomizedSearchCV(model_clf, hyperparams, n_iter=20)
+    clf.fit(X_train, y_train)
 
     # collect all the best hyperparameters found in the cv loop
     for hp in hyperparams:
         hp_dict[hp].append(clf.best_estimator_.get_params()[hp])
 
-    # find out most frequent hyperparameters during cross-val
-    for hp in hyperparams:
-        hp_mode[hp] = mode(hp_dict[hp])[0][0]
-    logger.debug('most frequent hp: {}'.format(hp_mode))
+    # collect performance metrics
+    acc_train = accuracy_score(y_train, clf.predict(X_train))
+    acc_test = accuracy_score(y_test, clf.predict(X_test))
+    f1_train = f1_score(y_train, clf.predict(X_train))
+    f1_test = f1_score(y_test, clf.predict(X_test))
+    auc_train = roc_auc_score(y_train, clf.predict(X_train))
+    auc_test = roc_auc_score(y_test, clf.predict(X_test))
 
-    # collect test / training data stats
-    if continuous:
-        # ignore p values returned by pearsonr
-        r_train = stats.pearsonr(clf.predict(X_train), y_train)[0]
-        r_test = stats.pearsonr(clf.predict(X_test), y_test)[0]
-    else:
-        r_train = np.mean(clf.predict(X_train) == y_train)
-        r_test = np.mean(clf.predict(X_test) == y_test)
-
-    R2_train = clf.score(X_train, y_train)
-    R2_test = clf.score(X_test, y_test)
-    MSE_train = mse(clf.predict(X_train), y_train)
-    MSE_test = mse(clf.predict(X_test), y_test)
-
-    logger.debug('predictions,true values\n{}'.format(np.vstack((clf.predict(X_test),  y_test))))
+    logger.debug('train data performance:\n{}'.format(classification_report(y_train, clf.predict(X_train))))
+    logger.debug('test data performance:\n{}'.format(classification_report(y_test, clf.predict(X_test))))
 
     # check feature importance (QC for HC importance)
     # for fid in np.arange(10):
@@ -351,16 +313,16 @@ def classify(X_train, X_test, y_train, y_test, model='RFC'):
     #     feat_imp = model_clf.feature_importances_
     #     print('\nfid: {} r: {}'.format(fid, zip(*CV_r_valid)[0][fid]))
     #     print(feat_imp[70:], np.argsort(feat_imp)[70:])
-    return {'r_train':   r_train,
-            'r_test':    r_test,
-            'R2_train':  R2_train,
-            'R2_test':   R2_test,
-            'MSE_train': MSE_train,
-            'MSE_test':  MSE_test,
+    return {'acc_train': acc_train,
+            'acc_test':  acc_test,
+            'f1_train':  f1_train,
+            'f1_test':   f1_test,
+            'auc_train': auc_train,
+            'auc_test':  auc_test,
             'hp_dict':   hp_dict}
 
 
-def cluster(X, y, plot=None, n_clust=2):
+def cluster(X, y, plot, n_clust=2):
     """
     Creates a distance matrix out of the input matrix Y. Clustering is run on
     this matrix using hierarchical clustering (Ward's algorithm). The data is
@@ -373,47 +335,28 @@ def cluster(X, y, plot=None, n_clust=2):
     axd.set_yticks([])
     link = sch.linkage(X, method='ward')
     clst = sch.fcluster(link, n_clust, criterion='maxclust')
+    dend = sch.dendrogram(link, orientation='right')
+    idx = dend['leaves']
+    X = utils.reorder(X, idx, symm=False)
+    axm = fig.add_axes([0.3,0.1,0.6,0.8])
+    im = axm.matshow(X, aspect='auto', origin='lower', cmap=plt.cm.Reds, vmin=0, vmax=0.5)
+    axm.set_xticks([])
+    axm.set_yticks([])
+    axc = fig.add_axes([0.91,0.1,0.02,0.8])
+    plt.colorbar(im, cax=axc)
+    plt.savefig(os.path.join(plot, 'xbrain_clusters.pdf'))
+    plt.close()
 
-    if plot:
-        dend = sch.dendrogram(link, orientation='right')
-        idx = dend['leaves']
-        X = utils.reorder(X, idx, symm=False)
-        axm = fig.add_axes([0.3,0.1,0.6,0.8])
-        im = axm.matshow(X, aspect='auto', origin='lower', cmap=plt.cm.Reds, vmin=0.3, vmax=0.6)
-        axm.set_xticks([])
-        axm.set_yticks([])
-        axc = fig.add_axes([0.91,0.1,0.02,0.8])
-        plt.colorbar(im, cax=axc)
-        plt.savefig(os.path.join(plot, 'xbrain_clusters.pdf'))
-        plt.close()
+    # create seaborn dataframe
+    #y = standardize(y)
+    #df = np.hstack((np.atleast_2d(y).T, np.atleast_2d(clst).T))
+    #df = pd.DataFrame(data=df, columns=['y', 'cluster'])
+    #df = pd.melt(df, id_vars=['cluster'], value_vars=['y'])
 
-        # create seaborn dataframe
-        y = standardize(y)
-        df = np.hstack((np.atleast_2d(y).T, np.atleast_2d(clst).T))
-        df = pd.DataFrame(data=df, columns=['y', 'cluster'])
-        df = pd.melt(df, id_vars=['cluster'], value_vars=['y'])
-
-        # plot clinical variables by cluster
-        b = sns.boxplot(x="variable", y="value", hue="cluster", data=df, palette="Set3")
-        for item in b.get_xticklabels():
-            item.set_rotation(45)
-        sns.plt.savefig(os.path.join(plot, 'xbrain_cluster_box.pdf'))
-        sns.plt.close()
-        distributions(y, clst, os.path.join(plot, 'xbrain_cluster_distributions.pdf'))
-
-        # get mean and SD of clinical variables
-        means = np.zeros((X.shape[1], len(np.unique(clst))))
-        stds  = np.zeros((X.shape[1], len(np.unique(clst))))
-        for x in range(X.shape[1]):
-            for c in np.unique(clst):
-                means[x, c-1] = np.mean(X[clst == c, x])
-                stds[x, c-1] = np.std(X[clst == c, x])
-        means = ((means.T - means.mean(axis=1))).T
-
-    return clst, idx, means
+    return clst
 
 
-def distributions(y, clst, plot):
+def distributions(y, plot, clst):
     """Plots data distribution by cluster."""
     unique = np.unique(clst)
     n = len(unique)
@@ -440,8 +383,7 @@ def cluster2(X, plot):
     clst = sch.fcluster(link, 2, criterion='maxclust')
     dend = sch.dendrogram(link, orientation='right')
     idx = dend['leaves']
-    X = X[idx, :]
-    X = X[:, idx]
+    X = utils.reorder(X, idx)
 
     axm = fig.add_axes([0.3,0.1,0.6,0.8])
     im = axm.matshow(X, aspect='auto', origin='lower', cmap=plt.cm.Reds, vmin=0, vmax=0.5)
@@ -450,7 +392,7 @@ def cluster2(X, plot):
     axc = fig.add_axes([0.91,0.1,0.02,0.8])
     plt.colorbar(im, cax=axc)
     plt.show()
-    plt.savefig(os.path.join(plot, 'corr.pdf'))
+    plt.savefig(os.path.join(plot, 'xbrain_clusters.pdf'))
 
     return clst
 

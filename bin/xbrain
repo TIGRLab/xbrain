@@ -10,26 +10,25 @@ Arguments:
 
 Options:
     --timeseries    A comma-seperated list of timeseries .csv (2D) predictors.
-    --connectivity  A comma-seperated list of correlation matrix .csv (2D) predictors.
+    --connectivity  A comma-seperated list of timeseries .csv (2D) predictors.
     --statmaps      A comma-seperated list of statmap .nii.gz (3D) predictors.
-    --predict       A comma-seperated list of column names in database to predict.
     --roi_mask      A ROI .nii.gz file with the same dimensions as all input statmaps and the same number of non-zero ROIs as there are unique timeseries.
+    --predict       A comma-seperated list of column names in database to predict.
     --k             Number of folds done for outer loop cross-validation [default: 10]
     --n_features    Number of tagret features per sample. If the number of raw features is larger than this number, uses PCA to reduce the data to this number.
     --target-cutoff Percentile cutoff (0 < p < 0.5) to seperate the low and high y score group [default: 0.5]
     --target-group  Draw the template from this group [default: 1]
     --two-template  If defined, features are the difference between target-group and this group. [default: -1]
-    --pre-test      Run a diagnostic pre-test (MDMR) relating the non-neural scores to the nerual features.
+    --diagnostics   Run a diagnostic pre-test (MDMR) relating the non-neural scores to the nerual features.
     --debug         Verbose outputs.
 
 DETAILS
 
 The xbrain analysis uses a double-cross validation approach to demonstrate
-whether the similarities in neural architecture or activity between a held-out
-'template' and independent 'sample' population (X) is predictive of non-neural
-variables of interest (Y). For example, demographics (age, sex), cognitive
-scores (IQ, TASIT), or clinical variables (medications taken, number of hospital
-visits in the last year).
+whether the similarities in neural architecture or activity in the brain (X) is
+predictive of non-neural variables of interest (Y). For example, demographics
+(age, sex), cognitive scores (IQ, TASIT), or clinical variables (medications
+taken, number of hospital visits in the last year).
 
 ** outer loop: stratified sample k fold cross validation**
 
@@ -47,8 +46,8 @@ against the test set, and performance measures are averaged across all folds.
 
 **inner loop: hyperparamater cross validation**
 
-5 fold cross validation is done to test all submitted hyperperameters on splits
-of the training data. The best model is brought forward for testing.
+3 randomized fold cross validation is done to test all submitted hyperperameters
+on splits of the training data. The best model is brought forward for testing.
 
 The grid search for each model is defined in xbrain.stats.classify.
 
@@ -72,13 +71,14 @@ xbrain -h or --help prints this message.
 """
 
 import sys, os
+import collections
 import logging
 import random
 import string
 
 import numpy as np
 import scipy as sp
-from scipy.stats import sem
+from scipy.stats import sem, mode
 import pandas as pd
 from sklearn.model_selection import StratifiedKFold
 
@@ -97,7 +97,16 @@ def assert_columns(db, columns):
         logger.error('not all columns {} found'.format(columns))
         sys.exit(1)
 
-def pre_test(db, timeseries, predict):
+def clean(X):
+    """Replaces nan and inf values in numpy array with zero"""
+    X[np.isnan(X)] = 0
+    X[np.isinf(X)] = 0
+    logger.debug('X matrix has {} bad values (replaced with 0)'.format(sum(X == 0)))
+
+    return(X)
+
+
+def pre_test(db, timeseries, predict, n_features=None):
     """
     use MDMR to detect relationship between cognitive variables and MRI data.
     Cluster brain data, and show the mean cognitive score in each cluster. Good
@@ -105,10 +114,14 @@ def pre_test(db, timeseries, predict):
     reduce the feature space to 1D for plotting.
     """
     logger.info('pre-test: detecting gross relationship between neural and cognitive data')
-    ts = corr.get_template_ts(db, timeseries)
-    X = corr.calc_xbrain(ts, db, timeseries)
+    X = corr.calc_xbrain(db, db, timeseries)
+    X = clean(X)
+    if n_features:
+        if X.shape[1] > n_features:
+            X = stats.pca_reduce(X.T, n=n_features).T
+
     y = utils.gather_dv(db, predict)
-    F, F_null, v = stats.mdmr(y.T, X)
+    F, F_null, v = stats.mdmr(y.T, X, method='euclidean')
     thresholds = stats.sig_cutoffs(F_null, two_sided=False)
 
     if F > thresholds[1]:
@@ -120,7 +133,13 @@ def pre_test(db, timeseries, predict):
     if len(y.shape) == 2 and y.shape[0] > 1:
         y = stats.pca_reduce(y)
 
-    clst = stats.cluster(X, y, plot=HOME)
+    np.savetxt(os.path.join(HOME, 'xbrain_X.csv'), X, delimiter=',')
+    np.savetxt(os.path.join(HOME, 'xbrain_y.csv'), y, delimiter=',')
+
+    # generate plots
+    corr.plot_X(X, HOME, title='features')
+    clst = stats.cluster2(X, plot=HOME)
+    stats.distributions(y, os.path.join(HOME, 'xbrain_y_dist.pdf'), np.zeros(len(y)))
     sys.exit()
 
 def main():
@@ -136,26 +155,26 @@ def main():
     #target_cutoff = float(arguments['--cutoff'])
     #target_group  = int(arguments['--target-group'])
     #two_template  = int(arguments['--two-template'])
-    #pre_test      = arguments['--pre-test']
+    #diagnostics   = arguments['--diagnostics']
     #debug         = arguments['--debug']
 
     global HOME
 
     # for testing
     database = '/projects/jviviano/data/xbrain/assets/database_xbrain.csv'
-    timeseries = 'ts_imi,ts_ea2'
+    timeseries = 'ts_imi_resid,ts_obs_resid'
     statmaps = None
     connectivity = None
     #predict = 'Part1_TotalCorrect,Part2_TotalCorrect,Part3_TotalCorrect,scog_er40_cr_columnpcr_value,scog_er40_crt_columnqcrt_value'
-    #predict = 'Part1_TotalCorrect,Part2_TotalCorrect,Part3_TotalCorrect'
-    predict = 'Diagnosis'
+    predict = 'Part1_TotalCorrect,Part2_TotalCorrect,Part3_TotalCorrect'
+    #predict = 'Diagnosis'
     roi_mask = None
-    k = 10
+    k = 5
     n_features = None
-    target_cutoff = 0.3
+    target_cutoff = 0.5
     target_group = 1
-    two_template = -1
-    pre_test = False
+    two_template = 0
+    diagnostics = True
     debug = True
 
     logger.info('starting')
@@ -173,6 +192,7 @@ def main():
     if not utils.is_probability(target_cutoff):
         logger.error('group target_cutoff percentile invalid for one group analysis: {} (0 < p < 1)'.format(target_cutoff))
         sys.exit(1)
+
 
     if two_template > -1:
         if two_template == target_group:
@@ -202,10 +222,11 @@ def main():
     db = db[columns]
     n_pre = len(db)
     db = db.dropna(axis=0)
+    logger.debug('columns in reduced database: {}'.format(columns))
     logger.debug('clean rows in database: {}/{}'.format(len(db), n_pre))
 
-    if pre_test:
-        pre_test(db, timeseries, predict)
+    if diagnostics:
+        pre_test(db, timeseries, predict, n_features=n_features)
 
     logger.debug('generating dependent variable vector y')
     y = utils.gather_dv(db, predict)
@@ -235,7 +256,8 @@ def main():
             sys.exit(1)
 
     # stores outputs across folds
-    r_train, r_test, R2_train, R2_test, MSE_train, MSE_test = [], [], [], [], [], []
+    acc_train, acc_test, f1_train, f1_test, auc_train, auc_test = [], [], [], [], [], []
+    hp_dict = collections.defaultdict(list)
 
     # stratified k-fold cross validation: split into train and test sets
     logger.info('Outer Loop: {} fold cross validation'.format(k))
@@ -259,8 +281,7 @@ def main():
             X = X - X2
 
         # remove nonsense values from X
-        X[np.isnan(X)] = 0
-        X[np.isinf(X)] = 0
+        X = clean(X)
 
         # if desired, compress the feature matrix X
         if n_features:
@@ -281,35 +302,32 @@ def main():
             logger.error(e)
             sys.exit(1)
 
-        # append the results of each iteration (representing a single
-        # template permutation for a single fold).
-        r_train.append(results['r_train'])
-        r_test.append(results['r_test'])
-        R2_train.append(results['R2_train'])
-        R2_test.append(results['R2_test'])
-        MSE_train.append(results['MSE_train'])
-        MSE_test.append(results['MSE_test'])
+        # append the results of each fold
+        acc_train.append(results['acc_train'])
+        acc_test.append(results['acc_test'])
+        f1_train.append(results['f1_train'])
+        f1_test.append(results['f1_test'])
+        auc_train.append(results['auc_train'])
+        auc_test.append(results['auc_test'])
 
-        # print intermediate aggregate stats
-        logger.debug('train scores:\n    r   ={:04.2f}+/-{:04.2f}\n    R2  ={:04.2f}+/-{:04.2f}\n    MSE ={:04.2f}+/-{:04.2f}'.format(
-            np.mean(r_train), sem(r_train),
-            np.mean(R2_train), sem(R2_train),
-            np.mean(MSE_train), sem(MSE_train)))
+        # collects the relevant hyperparameters for the chosen model
+        hp_tmp = results['hp_dict']
+        for hp in hp_tmp.keys():
+            hp_dict[hp].append(hp_tmp[hp])
 
-        logger.debug('test scores:\n    r    ={:04.2f}+/-{:04.2f}\n    R2  ={:04.2f}+/-{:04.2f}\n    MSE ={:04.2f}+/-{:04.2f}'.format(
-            np.mean(r_test), sem(r_test),
-            np.mean(R2_test), sem(R2_test),
-            np.mean(MSE_test), sem(MSE_test)))
+
+    # find out most frequent hyperparameters during cross-val
+    hp_mode = {}
+    for hp in hp_dict.keys():
+        hp_mode[hp] = mode(hp_dict[hp])[0][0]
+    logger.debug('most frequent hp:\n  {}'.format(hp_mode))
 
     # final results
-    rmean = np.mean(r_test)
-    rsem = sem(r_test)
-    r2mean = np.mean(R2_test)
-    r2sem = sem(R2_test)
-    msemean = np.mean(MSE_test)
-    msesem = sem(MSE_test)
+    print('train results:\n  acc={}+/-{}\n  f1={}+/-{}\n  auc={}+/-{}'.format(
+             np.mean(acc_train), sem(acc_train), np.mean(f1_train), sem(f1_train), np.mean(auc_train), sem(auc_train)))
+    print('test results:\n  acc={}+/-{}\n  f1={}+/-{}\n  auc={}+/-{}'.format(
+             np.mean(acc_test), sem(acc_test), np.mean(f1_test), sem(f1_test), np.mean(auc_test), sem(auc_test)))
 
-    print('Results:\n  rmean={}\n rsem={}\n  r2mean={}\n  r2sem={}\n  MSEmean={}\n  MSEsem={}\n'.format(rmean, rsem, r2mean, r2sem, msemean, msesem))
 
 if __name__ == '__main__':
     main()

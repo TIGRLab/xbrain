@@ -1,7 +1,7 @@
 """
 Functions for generating intersubject correlation features.
 """
-import os
+import os, sys
 import logging
 import numpy as np
 import pandas as pd
@@ -28,6 +28,7 @@ def pct_signal_change(ts):
     """Converts each timeseries (column of matrix ts) to % signal change."""
     means = np.tile(np.mean(ts, axis=0), [ts.shape[0], 1])
     return(((ts-means)/means) * 100)
+
 
 def zscore(ts):
     """Converts each timeseries to have 0 mean and unit variance."""
@@ -137,16 +138,16 @@ def plot_X(X, path, title='features', X2=None):
         raise Exception('path {} is not a directory'.format(path))
 
     if X2 is not None:
-        X2 = X2 * -1 # invert X2 so they render blue
-        X = np.vstack((X, X2))
+        X = np.vstack((np.vstack((X, np.ones(X.shape[1]))), X2))
 
     plt.imshow(X, vmin=-0.5, vmax=0.5, cmap=plt.cm.RdBu_r, interpolation='nearest')
+    plt.colorbar()
 
     if X2 is not None:
         plt.title('X (Reds) vs X2 (Blues)')
     else:
         plt.title('X (Reds)')
 
-    plt.savefig(os.path.join(path, 'xcorr_X_{}.pdf'.format(title)))
+    plt.savefig(os.path.join(path, 'xbrain_X_{}.pdf'.format(title)))
     plt.close()
 

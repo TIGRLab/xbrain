@@ -16,6 +16,10 @@ def reorder(X, idx, symm=False):
     if symm:
         assert_square(X)
         X = X[:, idx]
+
+    if X.shape[0] != len(idx):
+        logger.warn('reorg IDX length {} does not match the rows of X {}'.format(len(idx), X.shape[0]))
+
     X = X[idx, :]
 
     return(X)
