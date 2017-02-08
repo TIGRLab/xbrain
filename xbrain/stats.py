@@ -17,7 +17,8 @@ from scipy.stats import mode
 import pandas as pd
 from sklearn import preprocessing
 
-from sklearn.model_selection import RandomizedSearchCV
+from sklearn.model_selection import GridSearchCV
+from sklearn.decomposition import PCA
 from sklearn.linear_model import LogisticRegression
 from sklearn.svm import SVC
 from sklearn.ensemble import RandomForestClassifier
@@ -26,6 +27,7 @@ from sklearn.metrics import classification_report, accuracy_score, f1_score, roc
 import matplotlib
 matplotlib.use('Agg')   # Force matplotlib to not use any Xwindows backend
 import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 import seaborn as sns
 
 import xbrain.utils as utils
@@ -194,50 +196,105 @@ def individual_importances(X, Y):
     return V
 
 
-def pca_reduce(X, n=1):
-    """Uses PCA to return the top n components of the data as a matrix."""
+def pca_plot(X, y, plot):
+    """
+    Takes the top 3 PCs from the data matrix X, and plots them. y is used to
+    color code the data. No obvious grouping or clustering should be found. The
+    presence of such grouping suggests a strong site, sex, or similar effect.
+    """
+    clf = PCA(n_components=3)
+    clf = clf.fit(X)
+    X = clf.transform(X)
+    fig = plt.figure(1, figsize=(4, 3))
+    ax = Axes3D(fig, rect=[0, 0, .95, 1], elev=48, azim=134)
+    ax.scatter(X[:, 0], X[:, 1], X[:, 2], c=y, cmap=plt.cm.RdBu_r)
+    fig.savefig(os.path.join(plot, 'xbrain_X_PCs.pdf'))
+    plt.close()
 
-    mean = np.mean(X, axis=0)
 
-    # calculate the covariance matrix from centered data
-    X = X - np.mean(X)
-    R = np.cov(X, rowvar=True)
+def pca_reduce(X, n=1, pct=1, X2=False):
+    """
+    Uses PCA to reduce the number of features in the input matrix X. n is
+    the target number of features in X to retain after reduction. pct is the
+    target amount of variance (%) in the original matrix X to retain in the
+    reduced feature matrix. When n and pct disagree, compresses the feature
+    matrix to the smaller number of features. If X2 is defined, the same
+    transform learned from X is applied to X2.
+    """
+    if not utils.is_probability(pct):
+        raise Exception('pct should be a probability (0-1), is {}'.format(pct))
 
-    # calculate eigenvectors & eigenvalues of the covariance matrix
-    evals, evecs = linalg.eigh(R)
+    clf = PCA()
+    clf = clf.fit(X)
+    cumulative_var = np.cumsum(clf.explained_variance_ratio_)
 
-    # sort by explained variance
-    idx = np.argsort(evals)[::-1]
-    evecs = evecs[:, idx]
-    evals = evals[idx]
+    # calculate variance retained in the n components case
+    pct_n_case = cumulative_var[n-1] # correct for zero indexing
 
-    # normalize evals to calculate % variance
-    evals = evals / np.sum(evals)
-    evals = evals[:n]
-    logger.debug('PCA reduction: variance retained: {}'.format(np.sum(evals)))
+    # calculate # of components that would be retained in the pct case
+    if pct < 1:
+        n_comp_pct = np.where(cumulative_var >= pct)[0][0]
+    else:
+        n_comp_pct = len(cumulative_var)-1
 
-    # reduce to n components
-    evecs = evecs[:, :n]
-    recon = np.dot(evecs.T, X)
+    # case where we retain pre-defined % of the variance
+    if n_comp_pct < n:
+        cutoff = n_comp_pct + 1 # correct for zero indexing
+    # case where we use pre-defined number of components
+    else:
+        pct = pct_n_case
+        cutoff = n
 
-    # sign flip to match mean if only taking one component
-    if n == 1:
-        recon = recon.flatten()
-        corr = np.corrcoef(np.vstack((recon, mean)))[0,1]
-        if corr < 0:
-            recon = recon * -1
+    logger.info('X {} reduced to {} components, retaining {} % of variance'.format(X.shape, cutoff, pct))
 
-    return(recon)
+    # reduce X to the defined number of components
+    clf = PCA(n_components=cutoff)
+    clf.fit(X)
+    X_transformed = clf.transform(X)
+
+    # sign flip potentially applied if we only retain 1 component
+    if cutoff == 1:
+        X_transformed = sign_flip(X_transformed, X)
+
+    # if X2 is defined, apply the transform learnt from X to X2 as well
+    if np.any(X2):
+        X2_transformed = clf.transform(X2)
+
+        # sign flip potentially applied if we only retain 1 component
+        if cutoff == 1:
+            X2_transformed = sign_flip(X2_transformed, X)
+
+        logger.debug('PCA transform learned on X applied to X2')
+        return(X_transformed, X2_transformed)
+
+    return(X_transformed)
+
+
+def sign_flip(X_transformed, X):
+    """
+    X_transformed a 1D vector representing the top PC from X. This applies a
+    sign flip to X_transformed if X_transformed is anti-correlated with the mean
+    of X. This is important particularly for compressing the y variables, where
+    we want to retain high (good) and low (scores), and flipping these would
+    change our intrepretation of the statistics.
+    """
+    X_transformed = X_transformed.flatten()
+    corr = np.corrcoef(np.vstack((X_transformed, np.mean(X, axis=1))))[0,1]
+    if corr < 0:
+        X_transformed = X_transformed * -1
+
+    return(X_transformed)
 
 
 def make_classes(y):
     """transforms label values for classification"""
     le = preprocessing.LabelEncoder()
     le.fit(y)
+    logger.debug('unique transformed y groups: {}'.format(np.unique(le.transform(y))))
     return(le.transform(y))
 
 
-def classify(X_train, X_test, y_train, y_test, model='RFC'):
+def classify(X_train, X_test, y_train, y_test, model='SVC'):
     """
     Trains the selected classifier once on the submitted training data, and
     compares the predicted outputs of the test data with the real labels.
@@ -264,18 +321,17 @@ def classify(X_train, X_test, y_train, y_test, model='RFC'):
     elif model == 'SVC':
         model_clf = SVC()
         hyperparams = {'kernel':['linear','rbf'],
-                       'C': stats.lognorm(10, loc=0, scale=2**3),
-                       'gamma': stats.lognorm(10, loc=0, scale=2**3)}
+                       'class_weight': ['balanced'],
+                       'C': [2**-5, 2**-3, 2**-1, 2**1, 2**3, 2**5, 2**7, 2**9, 2**11, 2**13, 2**15],
+                       'gamma': [2**-5, 2**-3, 2**-1, 2**1, 2**3, 2**5]}
         scale_data = True
         feat_imp = True
     elif model == 'RFC':
         model_clf = RandomForestClassifier(n_jobs=6)
-        hyperparams =  {'class_weight': ['balanced_subsample'],
-                        'n_estimators':[10],
-                        'max_depth': [None, 3],
-                        'max_features': [None],
-                        'min_samples_split': stats.randint(int(round(n_features*0.05)), int(round(n_features*0.3))),
-                        'min_samples_leaf': stats.randint(int(round(n_features*0.05)), int(round(n_features*0.3))),
+        hyperparams =  {'class_weight': ['balanced'],
+                        'n_estimators': [1000],
+                        'min_samples_split': [int(n_features*0.025), int(n_features*0.05), int(n_features*0.075), int(n_features*0.1)],
+                        'min_samples_leaf': [int(n_features*0.025), int(n_features*0.05), int(n_features*0.075), int(n_features*0.1)],
                         'criterion': ['gini', 'entropy']}
         scale_data = False
         feat_imp = True
@@ -289,7 +345,7 @@ def classify(X_train, X_test, y_train, y_test, model='RFC'):
 
     # perform randomized hyperparameter search to find optimal settings
     logger.debug('Inner Loop: CV of hyperparameters for this fold')
-    clf = RandomizedSearchCV(model_clf, hyperparams, n_iter=20)
+    clf = GridSearchCV(model_clf, hyperparams)
     clf.fit(X_train, y_train)
 
     # collect all the best hyperparameters found in the cv loop
@@ -306,6 +362,8 @@ def classify(X_train, X_test, y_train, y_test, model='RFC'):
 
     logger.debug('train data performance:\n{}'.format(classification_report(y_train, clf.predict(X_train))))
     logger.debug('test data performance:\n{}'.format(classification_report(y_test, clf.predict(X_test))))
+    logger.debug('TRAIN: predicted,actual values\n{}\n{}'.format(clf.predict(X_train), y_train))
+    logger.debug('TEST:  predicted,actual values\n{}\n{}'.format(clf.predict(X_test), y_test))
 
     # check feature importance (QC for HC importance)
     # for fid in np.arange(10):
@@ -322,13 +380,11 @@ def classify(X_train, X_test, y_train, y_test, model='RFC'):
             'hp_dict':   hp_dict}
 
 
-def cluster(X, y, plot, n_clust=2):
+def cluster(X, plot, n_clust=2):
     """
-    Creates a distance matrix out of the input matrix Y. Clustering is run on
-    this matrix using hierarchical clustering (Ward's algorithm). The data is
-    ploted, and the variables in X are shown for all groups in each cluster.
+    Plots a simple hierarchical clustering of the feature matrix X. Clustering
+    is done using Ward's algorithm. Variables in X are arranged by cluster.
     """
-    # hierarchical clustering
     fig = plt.figure()
     axd = fig.add_axes([0.09,0.1,0.2,0.8])
     axd.set_xticks([])
@@ -339,7 +395,7 @@ def cluster(X, y, plot, n_clust=2):
     idx = dend['leaves']
     X = utils.reorder(X, idx, symm=False)
     axm = fig.add_axes([0.3,0.1,0.6,0.8])
-    im = axm.matshow(X, aspect='auto', origin='lower', cmap=plt.cm.Reds, vmin=0, vmax=0.5)
+    im = axm.matshow(X, aspect='auto', origin='lower', cmap=plt.cm.Reds, vmin=-0.5, vmax=0.5)
     axm.set_xticks([])
     axm.set_yticks([])
     axc = fig.add_axes([0.91,0.1,0.02,0.8])
@@ -347,53 +403,13 @@ def cluster(X, y, plot, n_clust=2):
     plt.savefig(os.path.join(plot, 'xbrain_clusters.pdf'))
     plt.close()
 
-    # create seaborn dataframe
-    #y = standardize(y)
-    #df = np.hstack((np.atleast_2d(y).T, np.atleast_2d(clst).T))
-    #df = pd.DataFrame(data=df, columns=['y', 'cluster'])
-    #df = pd.melt(df, id_vars=['cluster'], value_vars=['y'])
-
     return clst
 
 
-def distributions(y, plot, clst):
-    """Plots data distribution by cluster."""
-    unique = np.unique(clst)
-    n = len(unique)
-    for i in unique:
-        plt.subplot(1, n, i)
-        # Plot a kernel density estimate and rug plot
-        sns.distplot(y[clst == i], hist=False, rug=True, color="r")
+def distributions(y, plot):
+    """Plots data distribution of y."""
+    sns.distplot(y, hist=False, rug=True, color="r")
     sns.plt.savefig(plot)
     sns.plt.close()
-
-
-def cluster2(X, plot):
-    """
-    Hierarchical clustering of the rows in X (subjects). Uses Ward's algorithm.
-    """
-    fig = plt.figure()
-    axd = fig.add_axes([0.09,0.1,0.2,0.8])
-    axd.set_xticks([])
-    axd.set_yticks([])
-
-    X = np.corrcoef(X)
-
-    link = sch.linkage(X, method='ward')
-    clst = sch.fcluster(link, 2, criterion='maxclust')
-    dend = sch.dendrogram(link, orientation='right')
-    idx = dend['leaves']
-    X = utils.reorder(X, idx)
-
-    axm = fig.add_axes([0.3,0.1,0.6,0.8])
-    im = axm.matshow(X, aspect='auto', origin='lower', cmap=plt.cm.Reds, vmin=0, vmax=0.5)
-    axm.set_xticks([])
-    axm.set_yticks([])
-    axc = fig.add_axes([0.91,0.1,0.02,0.8])
-    plt.colorbar(im, cax=axc)
-    plt.show()
-    plt.savefig(os.path.join(plot, 'xbrain_clusters.pdf'))
-
-    return clst
 
 

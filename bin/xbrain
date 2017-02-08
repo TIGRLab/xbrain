@@ -9,18 +9,18 @@ Arguments:
     <database>      a .csv file containing MRI data (X) and non-neural data (y)
 
 Options:
-    --timeseries    A comma-seperated list of timeseries .csv (2D) predictors.
-    --connectivity  A comma-seperated list of timeseries .csv (2D) predictors.
-    --statmaps      A comma-seperated list of statmap .nii.gz (3D) predictors.
-    --roi_mask      A ROI .nii.gz file with the same dimensions as all input statmaps and the same number of non-zero ROIs as there are unique timeseries.
-    --predict       A comma-seperated list of column names in database to predict.
-    --k             Number of folds done for outer loop cross-validation [default: 10]
-    --n_features    Number of tagret features per sample. If the number of raw features is larger than this number, uses PCA to reduce the data to this number.
-    --target-cutoff Percentile cutoff (0 < p < 0.5) to seperate the low and high y score group [default: 0.5]
-    --target-group  Draw the template from this group [default: 1]
-    --two-template  If defined, features are the difference between target-group and this group. [default: -1]
-    --diagnostics   Run a diagnostic pre-test (MDMR) relating the non-neural scores to the nerual features.
-    --debug         Verbose outputs.
+    --xcorr=TS             A comma-seperated list of timeseries .csv (2D) predictors to use for cross-brain correlation (inter-subject).
+    --connectivity=CONN    A comma-seperated list of timeseries .csv (2D) predictors to use for connectivity (intra-subject).
+    --statmaps=STATS       A comma-seperated list of statmap .nii.gz (3D) predictors.
+    --roi-mask=MASK        A ROI .nii.gz file with the same dimensions as all input statmaps and the same number of non-zero ROIs as there are unique timeseries.
+    --predict=PREDICT      A comma-seperated list of column names in database to predict.
+    --k=K                  Number of folds done for outer loop cross-validation [default: 10]
+    --pct-variance=PCTVAR  Uses PCA to compress the input features to the number required to retain at least this amount of variance (0-1).
+    --target-cutoff=CUTOFF Percentile cutoff to seperate the low and high y score group.
+    --target-group=GROUP1  Draw the xbrain template from this group [default: 1]
+    --two-template=GROUP2  If defined, features are the difference between target-group and this group. [default: -1]
+    --diagnostics          Run diagnostics on input data.
+    --debug                Verbose outputs.
 
 DETAILS
 
@@ -75,6 +75,7 @@ import collections
 import logging
 import random
 import string
+from copy import copy
 
 import numpy as np
 import scipy as sp
@@ -82,7 +83,7 @@ from scipy.stats import sem, mode
 import pandas as pd
 from sklearn.model_selection import StratifiedKFold
 
-import xbrain.docopt as docopt
+from xbrain.docopt import docopt
 import xbrain.utils as utils
 import xbrain.correlate as corr
 import xbrain.stats as stats
@@ -97,128 +98,160 @@ def assert_columns(db, columns):
         logger.error('not all columns {} found'.format(columns))
         sys.exit(1)
 
+
 def clean(X):
-    """Replaces nan and inf values in numpy array with zero"""
+    """
+    Replaces nan and inf values in numpy array with zero. If any columns are all
+    0, removes them completely.
+    """
     X[np.isnan(X)] = 0
     X[np.isinf(X)] = 0
-    logger.debug('X matrix has {} bad values (replaced with 0)'.format(sum(X == 0)))
+    logger.debug('X matrix has {} bad values (replaced with 0)'.format(np.sum(X == 0)))
+
+    idx_zero = np.where(np.sum(np.abs(X), axis=0) == 0)[0] # find all zero cols
+
+    if len(idx_zero) > 0:
+        logger.debug('removing {} columns in X that are all 0'.format(len(idx_zero)))
+        idx = np.arange(X.shape[1])
+        idx = np.setdiff1d(idx, idx_zeros)
+        X = X[:, idx]
 
     return(X)
 
 
-def pre_test(db, timeseries, predict, n_features=None):
+def pre_test(db, xcorr, predict, target_cutoff, pct_variance=None):
     """
-    use MDMR to detect relationship between cognitive variables and MRI data.
-    Cluster brain data, and show the mean cognitive score in each cluster. Good
-    v scores are ~ 0.1, or 10%. If there are multiple predictors, uses PCA to
-    reduce the feature space to 1D for plotting.
+    A diagnostic pipeline for assessing the inputs to the classifier.
+
+    + Loads X and y. If y has multiple preditors, the top PC is calculated. The
+      vector is then thresholded at target_cutoff percentile.
+    + If pct_variance is defined, X is reduced using PCA to the number of
+      features required to capture that amount of variance (%).
+    + Plots a distribution of y, compressed to 1 PC.
+    + Saves a .csv with this compressed version of y.
+    + Thresholds y, and plots the top 3 PCs of X, with points colored by group
+      y. This plot should have no obvious structure.
+    + Plots a hierarchical clustering of the (possibly reduced) feature matrix
+      X.
+    + Uses MDMR to detect relationship between cognitive variables and MRI data.
+      Good v scores are ~ 0.1, or 10%.
     """
     logger.info('pre-test: detecting gross relationship between neural and cognitive data')
-    X = corr.calc_xbrain(db, db, timeseries)
+    X = corr.calc_xbrain(db, db, xcorr)
     X = clean(X)
-    if n_features:
-        if X.shape[1] > n_features:
-            X = stats.pca_reduce(X.T, n=n_features).T
 
+    # load y, and compress y to a single vector using PCA if required
     y = utils.gather_dv(db, predict)
+    if len(y.shape) == 2 and y.shape[0] > 1:
+        y_1d = copy(stats.pca_reduce(y.T))
+    else:
+        y_1d = copy(y)
+
+    # plot the y variable (1d) before generating classes
+    stats.distributions(y_1d.T, os.path.join(HOME, 'xbrain_y_dist.pdf'))
+
+    # print the top 3 PCs of X, colour coding by y group (diagnostic for site effects etc)
+    stats.pca_plot(X, y_1d, HOME)
+
+    # save the y vector before gathering classes
+    np.savetxt(os.path.join(HOME, 'xbrain_y.csv'), y_1d, delimiter=',')
+
+    # convert y into classes, thresholding if required
+    if len(np.unique(y_1d)) > 10:
+        logger.info('splitting y into two groups: {} percentile cutoff'.format(target_cutoff))
+        y_groups = utils.make_dv_groups(y_1d, target_cutoff)
+    else:
+        y_groups = copy(y_1d)
+    y_groups = stats.make_classes(y_groups)
+
+    # compress the number of features X if required
+    if pct_variance:
+        X = stats.pca_reduce(X, n=X.shape[0], pct=pct_variance)
+
+    # save the X matrix
+    np.savetxt(os.path.join(HOME, 'xbrain_X.csv'), X, delimiter=',')
+
+    # plot a hierarchical clustering of the feature matrix X
+    clst = stats.cluster(X, HOME)
+
+    # use MDMR to find a relationship between the X matrix and all y predictors
     F, F_null, v = stats.mdmr(y.T, X, method='euclidean')
     thresholds = stats.sig_cutoffs(F_null, two_sided=False)
-
     if F > thresholds[1]:
         logger.info('pre-test: relationship detected: F={} > {}, variance explained={}'.format(F, thresholds[1], v))
     else:
         logger.warn('pre-test: no relationship detected, variance explained={}'.format(v))
 
-    # reduce predictors to 1D for plotting
-    if len(y.shape) == 2 and y.shape[0] > 1:
-        y = stats.pca_reduce(y)
-
-    np.savetxt(os.path.join(HOME, 'xbrain_X.csv'), X, delimiter=',')
-    np.savetxt(os.path.join(HOME, 'xbrain_y.csv'), y, delimiter=',')
-
-    # generate plots
-    corr.plot_X(X, HOME, title='features')
-    clst = stats.cluster2(X, plot=HOME)
-    stats.distributions(y, os.path.join(HOME, 'xbrain_y_dist.pdf'), np.zeros(len(y)))
     sys.exit()
 
 def main():
-    #arguments = docopt(__doc__)
-    #database      = arguments['<database>']
-    #timeseries    = arguments['--timeseries']
-    #connectivity  = arguments['--connectivity']
-    #statmaps      = arguments['--statmaps']
-    #predict       = arguments['--predict']
-    #roi_mask      = arguments['--roi_mask']
-    #k             = int(arguments['--k'])
-    #n_features    = arguments['--n-features']
-    #target_cutoff = float(arguments['--cutoff'])
-    #target_group  = int(arguments['--target-group'])
-    #two_template  = int(arguments['--two-template'])
-    #diagnostics   = arguments['--diagnostics']
-    #debug         = arguments['--debug']
+    arguments = docopt(__doc__)
+    database      = arguments['<database>']
+    xcorr    = arguments['--xcorr']
+    connectivity  = arguments['--connectivity']
+    statmaps      = arguments['--statmaps']
+    predict       = arguments['--predict']
+    roi_mask      = arguments['--roi-mask']
+    k             = int(arguments['--k'])
+    pct_variance  = float(arguments['--pct-variance'])
+
+    print(arguments['--target-cutoff'])
+    target_cutoff = float(arguments['--target-cutoff'])
+    target_group  = int(arguments['--target-group'])
+    two_template  = int(arguments['--two-template'])
+    diagnostics   = arguments['--diagnostics']
+    debug         = arguments['--debug']
 
     global HOME
 
-    # for testing
-    database = '/projects/jviviano/data/xbrain/assets/database_xbrain.csv'
-    timeseries = 'ts_imi_resid,ts_obs_resid'
-    statmaps = None
-    connectivity = None
-    #predict = 'Part1_TotalCorrect,Part2_TotalCorrect,Part3_TotalCorrect,scog_er40_cr_columnpcr_value,scog_er40_crt_columnqcrt_value'
-    predict = 'Part1_TotalCorrect,Part2_TotalCorrect,Part3_TotalCorrect'
-    #predict = 'Diagnosis'
-    roi_mask = None
-    k = 5
-    n_features = None
-    target_cutoff = 0.5
-    target_group = 1
-    two_template = 0
-    diagnostics = True
-    debug = True
-
+    # init the logger
     logger.info('starting')
     if debug:
         logger.setLevel(logging.DEBUG)
 
-    logger.debug('checking inputs')
+    # check and format inputs
     try:
         db = pd.read_csv(database)
     except:
         logger.error('failed to parse input .csv database {}',format(database))
         sys.exit(1)
 
-    # check and format inputs
     if not utils.is_probability(target_cutoff):
-        logger.error('group target_cutoff percentile invalid for one group analysis: {} (0 < p < 1)'.format(target_cutoff))
+        logger.error('group target_cutoff percentile {} invalid, should be (0-1)'.format(target_cutoff))
         sys.exit(1)
 
+    if pct_variance:
+        if not utils.is_probability(pct_variance):
+            logger.error('pct variance retained {} invalid, should be (0-1)'.format(pct_variance))
 
     if two_template > -1:
         if two_template == target_group:
             logger.error('two_template group {} should be different than the target group {}'.format(two_template, target_group))
             sys.exit(1)
 
-    if n_features:
-        n_features = int(n_features)
-
     # check all defined database columns
     columns = []
     if statmaps:
         statmaps = statmaps.split(',')
-        assert_columns(db, timeseries)
+        assert_columns(db, statmaps)
         columns.extend(statmaps)
 
-    if timeseries:
-        timeseries = timeseries.split(',')
-        assert_columns(db, timeseries)
-        columns.extend(timeseries)
+    if xcorr:
+        xcorr = xcorr.split(',')
+        assert_columns(db, xcorr)
+        columns.extend(xcorr)
+
+    if connectivity:
+        connectivity = connectivity.split(',')
+        assert_columns(db, connectivity)
+        columns.extend(connectivity)
 
     predict = predict.split(',')
     assert_columns(db, predict)
     columns.extend(predict)
 
     # reduce data to defined columns
+    columns = list(set(columns))
     db = db[columns]
     n_pre = len(db)
     db = db.dropna(axis=0)
@@ -226,19 +259,18 @@ def main():
     logger.debug('clean rows in database: {}/{}'.format(len(db), n_pre))
 
     if diagnostics:
-        pre_test(db, timeseries, predict, n_features=n_features)
+        pre_test(db, xcorr, predict, target_cutoff, pct_variance=pct_variance)
 
     logger.debug('generating dependent variable vector y')
     y = utils.gather_dv(db, predict)
     if len(y.shape) == 2 and y.shape[0] > 1:
         logger.info('using PCA to reduce {} dvs in y down to 1 component'.format(y.shape[0]))
-        y = stats.pca_reduce(y)
+        y = stats.pca_reduce(y.T)
 
-    # split into groups if the data is continuous
+    # split y into groups if the data is continuous
     if len(np.unique(y)) > 10:
         logger.info('splitting y into two groups: {} percentile cutoff'.format(target_cutoff))
         y = utils.make_dv_groups(y, target_cutoff)
-
     y = stats.make_classes(y)
 
     # add a column with the preprocessed y groups
@@ -259,6 +291,10 @@ def main():
     acc_train, acc_test, f1_train, f1_test, auc_train, auc_test = [], [], [], [], [], []
     hp_dict = collections.defaultdict(list)
 
+    # calculate connectivity (can be outside of k-fold since no information is shared between samples)
+    if connectivity:
+        X_conn = corr.calc_connectivity(db, connectivity)
+
     # stratified k-fold cross validation: split into train and test sets
     logger.info('Outer Loop: {} fold cross validation'.format(k))
     kf = StratifiedKFold(n_splits=k, shuffle=True)
@@ -268,30 +304,41 @@ def main():
         y_train = y[train_idx]
         y_test = y[test_idx]
 
-        # calculate X from a training sample template
-        logger.debug('calculating template 1: group {}'.format(target_group))
-        template_1 = corr.find_template(db.iloc[train_idx], y_uid, timeseries, group=target_group)
-        X = corr.calc_xbrain(template_1, db, timeseries)
+        # calculate X_xcorr from a training sample template
+        if xcorr:
+            logger.debug('xcorr: calculating template 1 (group {})'.format(target_group))
+            template_1 = corr.find_template(db.iloc[train_idx], y_uid, xcorr, group=target_group)
+            X_xcorr = corr.calc_xbrain(template_1, db, xcorr)
 
-        if two_template > -1:
-            logger.debug('calculating template 2: group {}'.format(two_template))
-            template_2 = corr.find_template(db.iloc[train_idx], y_uid, timeseries, group=two_template)
-            X2 = corr.calc_xbrain(template_2, db, timeseries)
-            logger.debug('two template analysis: group {} - group {}'.format(target_group, two_template))
-            X = X - X2
+            if two_template > -1:
+                logger.debug('xcorr: calculating template 2 (group {})'.format(two_template))
+                template_2 = corr.find_template(db.iloc[train_idx], y_uid, xcorr, group=two_template)
+                X2_xcorr = corr.calc_xbrain(template_2, db, xcorr)
+                logger.debug('xcorr: two template analysis (group {} - group {})'.format(target_group, two_template))
+                X_xcorr = X_xcorr - X2_xcorr
+
+        # compose X out of the appropriate matricies
+        if xcorr and connectivity:
+            X = np.hstack((X_xcorr, X_conn))
+        elif connectivity:
+            X = X_conn
+        elif xcorr:
+            X = X_xcorr
+        else:
+            logger.error('X not defined: no xcorr or connectivity inputs')
+            sys.exit(1)
 
         # remove nonsense values from X
         X = clean(X)
 
-        # if desired, compress the feature matrix X
-        if n_features:
-            if X.shape[1] > n_features:
-                # double transpose required to reduce over features, not samples
-                X = stats.pca_reduce(X.T, n=n_features).T
-
         # split X into test and train groups
         X_train = X[train_idx, :]
         X_test  = X[test_idx, :]
+
+        # if desired, compress the feature matrix X
+        if pct_variance:
+            X_train, X_test = stats.pca_reduce(X_train, n=X_train.shape[0],
+                                                    pct=pct_variance, X2=X_test)
 
         corr.plot_X(X_train, HOME, title='test-vs-train', X2=X_test)
 
@@ -315,7 +362,6 @@ def main():
         for hp in hp_tmp.keys():
             hp_dict[hp].append(hp_tmp[hp])
 
-
     # find out most frequent hyperparameters during cross-val
     hp_mode = {}
     for hp in hp_dict.keys():
@@ -327,7 +373,6 @@ def main():
              np.mean(acc_train), sem(acc_train), np.mean(f1_train), sem(f1_train), np.mean(auc_train), sem(auc_train)))
     print('test results:\n  acc={}+/-{}\n  f1={}+/-{}\n  auc={}+/-{}'.format(
              np.mean(acc_test), sem(acc_test), np.mean(f1_test), sem(f1_test), np.mean(auc_test), sem(auc_test)))
-
 
 if __name__ == '__main__':
     main()

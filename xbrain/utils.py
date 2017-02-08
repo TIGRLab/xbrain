@@ -56,7 +56,7 @@ def scrub_data(x):
 
 def is_probability(x):
     """True if x is a float between 0 and 1, otherwise false."""
-    if x > 0 and x < 1:
+    if x >= 0 and x <= 1:
         return True
     return False
 

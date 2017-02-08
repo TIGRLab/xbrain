@@ -36,6 +36,45 @@ def zscore(ts):
     stdev = np.tile(np.std(ts, axis=0), [ts.shape[0], 1])
     return((ts-means)/stdev)
 
+
+def calc_connectivity(db, connectivity):
+    """
+    Calculates within-brain connnectivity of each participant in the db. The
+    connectivity features are concatenated for each participant and returned as
+    the feature matrix X.
+    """
+    db_idx = db.index
+    n = len(db)
+    for i, column in enumerate(connectivity):
+
+        # loop through subjects
+        for j, subj in enumerate(db_idx):
+            try:
+                ts = read_timeseries(db, j, column)
+            except IOError as e:
+                logger.error(e)
+                sys.exit(1)
+
+            idx = np.triu_indices(ts.shape[1], k=1)
+            rs = np.corrcoef(ts.T)[idx]
+
+            # for the first timeseries, initialize the output array
+            if j == 0:
+                corrs = np.zeros((n, len(rs)))
+
+            corrs[j, :] = rs
+
+        # horizontally concatenate corrs into X (samples X features)
+        if i == 0:
+            X = corrs
+        else:
+            X = np.hstack((X, corrs))
+
+    logger.debug('correlation feature matrix shape: {}'.format(X.shape))
+
+    return X
+
+
 def calc_xbrain(template_db, db, timeseries):
     """
     Calculates correlation of each participant in db with mean time series of
@@ -108,7 +147,11 @@ def get_column_ts(df, column):
     for i in range(n):
         ts = read_timeseries(df, i, column)
         ts = pct_signal_change(ts)
-        template_ts[:, :, i] = ts
+        try:
+            template_ts[:, :, i] = ts
+        except:
+            logger.error('{} timeseries file is the incorrect size (likely truncated timeseries)'.format(df.iloc[i][column]))
+            sys.exit(1)
 
     return template_ts
 

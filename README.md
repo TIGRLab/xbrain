@@ -1,14 +1,14 @@
-**xbrain: cross-brain correlation for cognitive score prediction**
+**xbrain: use functional neuroimaging features to predict cognitive scores**
 
-A set of tools for performing a special form of cognitive score prediction using a simple cross-brain correlation metric using fMRI data.
+A platform for conducting classification experiments using functional neuroimaging data and out-of-scanner cognitive tests. Neuroimaging features can be a mix of within-brain connectivity, and intra-subject correlations during task / natural viewing experiments.
 
-+ uses a variation on the method implemeted [here](http://journals.plos.org/plosone/article?id=10.1371/journal.pone.0041196)
-+ this method pulls out a random subset of 'template' subjects with average cognitive scores.
-+ template chosen based on a pre-selected cognitive trait of interest.
++ inter-subject correlation (xcorr) uses the method implemeted [here](http://journals.plos.org/plosone/article?id=10.1371/journal.pone.0041196).
++ intra-subject correlation (connectivity) uses simple between-ROI connectivity.
++ performs n-fold cross validation (outer loop: test and train split).
++ performs hyperparameter cross validation (inner loop: train and validation split).
++ xcorr features are calculated using a template population drawn from the training set only so there is no information leakage between the training and test sets.
 + all subject are correlated against this template, regardless of group membership.
-+ the output cross-subject correlations can then be brought forward to do classification and regression experiments without worry about lack of independence in observations.
-
-**app for ISC analysis**
-
-https://machow.shinyapps.io/shiny-isc
++ if more than one cognitive predictor (y) is desired, uses PCA to reduce this to a single aggregate cognitive score.
++ y is then split into a low and high group at the desired percentile.
++ if y is discrete (e.g., diagnosis), contrasts the target group with every other group.
 
