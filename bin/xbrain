@@ -363,15 +363,20 @@ def main():
             hp_dict[hp].append(hp_tmp[hp])
 
     # find out most frequent hyperparameters during cross-val
-    hp_mode = {}
+    hp_final = {}
     for hp in hp_dict.keys():
-        hp_mode[hp] = mode(hp_dict[hp])[0][0]
-    logger.debug('most frequent hp:\n  {}'.format(hp_mode))
+        if isinstance(hp_dict[hp][0][0], basestring):
+            # categorical hyperparameters, take most frequent
+            hp_final[hp] = mode(hp_dict[hp][0])[0][0]
+        else:
+            # continuous / integet hyperparameters, take median
+            hp_final[hp] = np.median(hp_dict[hp][0])
+    logger.debug('final hyperparameters:\n{}'.format(hp_final))
 
     # final results
-    print('train results:\n  acc={}+/-{}\n  f1={}+/-{}\n  auc={}+/-{}'.format(
+    logger.info('train results:\n  acc={}+/-{}\n  f1={}+/-{}\n  auc={}+/-{}'.format(
              np.mean(acc_train), sem(acc_train), np.mean(f1_train), sem(f1_train), np.mean(auc_train), sem(auc_train)))
-    print('test results:\n  acc={}+/-{}\n  f1={}+/-{}\n  auc={}+/-{}'.format(
+    logger.info('test results:\n  acc={}+/-{}\n  f1={}+/-{}\n  auc={}+/-{}'.format(
              np.mean(acc_test), sem(acc_test), np.mean(f1_test), sem(f1_test), np.mean(auc_test), sem(auc_test)))
 
 if __name__ == '__main__':

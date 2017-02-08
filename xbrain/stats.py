@@ -8,19 +8,16 @@ import random
 import string
 
 import numpy as np
-import scipy as sp
+from scipy import linalg
+from scipy.stats import lognorm, randint, uniform, mode
 import scipy.cluster.hierarchy as sch
 from scipy.spatial.distance import pdist, squareform
-from scipy import stats
-from scipy import linalg
-from scipy.stats import mode
-import pandas as pd
-from sklearn import preprocessing
 
-from sklearn.model_selection import GridSearchCV
+from sklearn import preprocessing
+from sklearn.model_selection import RandomizedSearchCV
 from sklearn.decomposition import PCA
 from sklearn.linear_model import LogisticRegression
-from sklearn.svm import SVC
+from sklearn.svm import LinearSVC
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import classification_report, accuracy_score, f1_score, roc_auc_score
 
@@ -319,19 +316,19 @@ def classify(X_train, X_test, y_train, y_test, model='SVC'):
         scale_data = True
         feat_imp = False
     elif model == 'SVC':
-        model_clf = SVC()
-        hyperparams = {'kernel':['linear','rbf'],
-                       'class_weight': ['balanced'],
-                       'C': [2**-5, 2**-3, 2**-1, 2**1, 2**3, 2**5, 2**7, 2**9, 2**11, 2**13, 2**15],
-                       'gamma': [2**-5, 2**-3, 2**-1, 2**1, 2**3, 2**5]}
+        model_clf = LinearSVC()
+        hyperparams = {'class_weight': ['balanced'],
+                       'tol': uniform(0.0001, 0.01),
+                       'C': lognorm(2, loc=0.0000001, scale=0.1),
+                       'max_iter': [10000]}
         scale_data = True
         feat_imp = True
     elif model == 'RFC':
         model_clf = RandomForestClassifier(n_jobs=6)
         hyperparams =  {'class_weight': ['balanced'],
                         'n_estimators': [1000],
-                        'min_samples_split': [int(n_features*0.025), int(n_features*0.05), int(n_features*0.075), int(n_features*0.1)],
-                        'min_samples_leaf': [int(n_features*0.025), int(n_features*0.05), int(n_features*0.075), int(n_features*0.1)],
+                        'min_samples_split': randint(int(n_features*0.025), int(n_features*0.2)),
+                        'min_samples_leaf': randint(int(n_features*0.025), int(n_features*0.2)),
                         'criterion': ['gini', 'entropy']}
         scale_data = False
         feat_imp = True
@@ -344,8 +341,8 @@ def classify(X_train, X_test, y_train, y_test, model='SVC'):
         X_test = preprocessing.scale(X_test)
 
     # perform randomized hyperparameter search to find optimal settings
-    logger.debug('Inner Loop: CV of hyperparameters for this fold')
-    clf = GridSearchCV(model_clf, hyperparams)
+    logger.debug('Inner Loop: Randomized CV of hyperparameters for this fold')
+    clf = RandomizedSearchCV(model_clf, hyperparams, n_iter=100)
     clf.fit(X_train, y_train)
 
     # collect all the best hyperparameters found in the cv loop

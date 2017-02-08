@@ -1,14 +1,25 @@
 #!/bin/bash
-echo 'basic diagnosis prediction'
+#echo 'diagnosis prediction, all sites, 50% PCA variance retained'
+#./bin/xbrain \
+#    --xcorr='ts_imi_resid,ts_obs_resid' \
+#    --connectivity='ts_rst' \
+#    --predict='Diagnosis' \
+#    --target-cutoff=0.5 \
+#    --pct-variance=0.5 \
+#    --target-group=0 \
+#    --debug \
+#    /projects/jviviano/data/xbrain/assets/database_xbrain.csv
+
+echo 'diagnosis prediction, CMH, 50% PCA variance retained'
+#    --xcorr='ts_imi_resid,ts_obs_resid' \
 ./bin/xbrain \
-    --xcorr='ts_imi_resid,ts_obs_resid' \
     --connectivity='ts_rst' \
     --predict='Diagnosis' \
     --target-cutoff=0.5 \
-    --pct-variance=0.8 \
+    --pct-variance=0.5 \
     --target-group=0 \
     --debug \
-    /projects/jviviano/data/xbrain/assets/database_xbrain.csv
+    /projects/jviviano/data/xbrain/assets/database_xbrain_CMH.csv
 
 #./bin/xbrain \
 #    --xcorr='ts_imi_resid,ts_obs_resid' \
