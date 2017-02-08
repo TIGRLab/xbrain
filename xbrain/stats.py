@@ -27,9 +27,97 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 import seaborn as sns
 
+import xbrain.correlate as corr
 import xbrain.utils as utils
 
 logger = logging.getLogger(__name__)
+
+
+def classify(X_train, X_test, y_train, y_test, model='SVC'):
+    """
+    Trains the selected classifier once on the submitted training data, and
+    compares the predicted outputs of the test data with the real labels.
+    Includes a hyper-parameter cross validation loop, the 'innermost' loop.
+    Returns a set of metrics collected from the hyperparameter grid search and
+    the test error.
+    """
+    if X_train.shape[0] != y_train.shape[0]:
+        raise Exception('X_train shape {} does not equal y_train shape {}'.format(X_train.shape[0], y_train.shape[0]))
+    if X_test.shape[0] != y_test.shape[0]:
+        raise Exception('X_test shape {} does not equal y_test shape {}'.format(X_test.shape[0], y_test.shape[0]))
+
+    n_features = X_train.shape[1]
+
+    hp_dict = collections.defaultdict(list)
+    r_train, r_test, R2_train, R2_test, MSE_train, MSE_test = [], [], [], [], [], []
+
+    # for testing various models, includes grid search settings
+    if model == 'Logistic':
+        model_clf = LogisticRegression()
+        hyperparams = {'C': [0.2, 0.6, 0.8, 1, 1.2] }
+        scale_data = True
+        feat_imp = False
+    elif model == 'SVC':
+        model_clf = LinearSVC()
+        hyperparams = {'class_weight': ['balanced'],
+                       'tol': uniform(0.0001, 0.01),
+                       'C': lognorm(2, loc=0.0000001, scale=0.1),
+                       'max_iter': [10000]}
+        scale_data = True
+        feat_imp = True
+    elif model == 'RFC':
+        model_clf = RandomForestClassifier(n_jobs=6)
+        hyperparams =  {'class_weight': ['balanced'],
+                        'n_estimators': [1000],
+                        'min_samples_split': randint(int(n_features*0.025), int(n_features*0.2)),
+                        'min_samples_leaf': randint(int(n_features*0.025), int(n_features*0.2)),
+                        'criterion': ['gini', 'entropy']}
+        scale_data = False
+        feat_imp = True
+    else:
+        logger.error('invalid model type {}'.format(model))
+        sys.exit(1)
+
+    if scale_data:
+        X_train = preprocessing.scale(X_train)
+        X_test = preprocessing.scale(X_test)
+
+    # perform randomized hyperparameter search to find optimal settings
+    logger.debug('Inner Loop: Randomized CV of hyperparameters for this fold')
+    clf = RandomizedSearchCV(model_clf, hyperparams, n_iter=100)
+    clf.fit(X_train, y_train)
+
+    # collect all the best hyperparameters found in the cv loop
+    for hp in hyperparams:
+        hp_dict[hp].append(clf.best_estimator_.get_params()[hp])
+
+    # collect performance metrics
+    acc_train = accuracy_score(y_train, clf.predict(X_train))
+    acc_test = accuracy_score(y_test, clf.predict(X_test))
+    f1_train = f1_score(y_train, clf.predict(X_train))
+    f1_test = f1_score(y_test, clf.predict(X_test))
+    auc_train = roc_auc_score(y_train, clf.predict(X_train))
+    auc_test = roc_auc_score(y_test, clf.predict(X_test))
+
+    logger.debug('train data performance:\n{}'.format(classification_report(y_train, clf.predict(X_train))))
+    logger.debug('test data performance:\n{}'.format(classification_report(y_test, clf.predict(X_test))))
+    logger.debug('TRAIN: predicted,actual values\n{}\n{}'.format(clf.predict(X_train), y_train))
+    logger.debug('TEST:  predicted,actual values\n{}\n{}'.format(clf.predict(X_test), y_test))
+
+    # check feature importance (QC for HC importance)
+    # for fid in np.arange(10):
+    #     model_clf.fit(X_train[fid],y_train[fid])
+    #     feat_imp = model_clf.feature_importances_
+    #     print('\nfid: {} r: {}'.format(fid, zip(*CV_r_valid)[0][fid]))
+    #     print(feat_imp[70:], np.argsort(feat_imp)[70:])
+    return {'acc_train': acc_train,
+            'acc_test':  acc_test,
+            'f1_train':  f1_train,
+            'f1_test':   f1_test,
+            'auc_train': auc_train,
+            'auc_test':  auc_test,
+            'hp_dict':   hp_dict}
+
 
 def r_to_z(R):
     """Fischer's r-to-z transform on a matrix (elementwise)."""
@@ -291,92 +379,6 @@ def make_classes(y):
     return(le.transform(y))
 
 
-def classify(X_train, X_test, y_train, y_test, model='SVC'):
-    """
-    Trains the selected classifier once on the submitted training data, and
-    compares the predicted outputs of the test data with the real labels.
-    Includes a hyper-parameter cross validation loop, the 'innermost' loop.
-    Returns a set of metrics collected from the hyperparameter grid search and
-    the test error.
-    """
-    if X_train.shape[0] != y_train.shape[0]:
-        raise Exception('X_train shape {} does not equal y_train shape {}'.format(X_train.shape[0], y_train.shape[0]))
-    if X_test.shape[0] != y_test.shape[0]:
-        raise Exception('X_test shape {} does not equal y_test shape {}'.format(X_test.shape[0], y_test.shape[0]))
-
-    n_features = X_train.shape[1]
-
-    hp_dict = collections.defaultdict(list)
-    r_train, r_test, R2_train, R2_test, MSE_train, MSE_test = [], [], [], [], [], []
-
-    # for testing various models, includes grid search settings
-    if model == 'Logistic':
-        model_clf = LogisticRegression()
-        hyperparams = {'C': [0.2, 0.6, 0.8, 1, 1.2] }
-        scale_data = True
-        feat_imp = False
-    elif model == 'SVC':
-        model_clf = LinearSVC()
-        hyperparams = {'class_weight': ['balanced'],
-                       'tol': uniform(0.0001, 0.01),
-                       'C': lognorm(2, loc=0.0000001, scale=0.1),
-                       'max_iter': [10000]}
-        scale_data = True
-        feat_imp = True
-    elif model == 'RFC':
-        model_clf = RandomForestClassifier(n_jobs=6)
-        hyperparams =  {'class_weight': ['balanced'],
-                        'n_estimators': [1000],
-                        'min_samples_split': randint(int(n_features*0.025), int(n_features*0.2)),
-                        'min_samples_leaf': randint(int(n_features*0.025), int(n_features*0.2)),
-                        'criterion': ['gini', 'entropy']}
-        scale_data = False
-        feat_imp = True
-    else:
-        logger.error('invalid model type {}'.format(model))
-        sys.exit(1)
-
-    if scale_data:
-        X_train = preprocessing.scale(X_train)
-        X_test = preprocessing.scale(X_test)
-
-    # perform randomized hyperparameter search to find optimal settings
-    logger.debug('Inner Loop: Randomized CV of hyperparameters for this fold')
-    clf = RandomizedSearchCV(model_clf, hyperparams, n_iter=100)
-    clf.fit(X_train, y_train)
-
-    # collect all the best hyperparameters found in the cv loop
-    for hp in hyperparams:
-        hp_dict[hp].append(clf.best_estimator_.get_params()[hp])
-
-    # collect performance metrics
-    acc_train = accuracy_score(y_train, clf.predict(X_train))
-    acc_test = accuracy_score(y_test, clf.predict(X_test))
-    f1_train = f1_score(y_train, clf.predict(X_train))
-    f1_test = f1_score(y_test, clf.predict(X_test))
-    auc_train = roc_auc_score(y_train, clf.predict(X_train))
-    auc_test = roc_auc_score(y_test, clf.predict(X_test))
-
-    logger.debug('train data performance:\n{}'.format(classification_report(y_train, clf.predict(X_train))))
-    logger.debug('test data performance:\n{}'.format(classification_report(y_test, clf.predict(X_test))))
-    logger.debug('TRAIN: predicted,actual values\n{}\n{}'.format(clf.predict(X_train), y_train))
-    logger.debug('TEST:  predicted,actual values\n{}\n{}'.format(clf.predict(X_test), y_test))
-
-    # check feature importance (QC for HC importance)
-    # for fid in np.arange(10):
-    #     model_clf.fit(X_train[fid],y_train[fid])
-    #     feat_imp = model_clf.feature_importances_
-    #     print('\nfid: {} r: {}'.format(fid, zip(*CV_r_valid)[0][fid]))
-    #     print(feat_imp[70:], np.argsort(feat_imp)[70:])
-    return {'acc_train': acc_train,
-            'acc_test':  acc_test,
-            'f1_train':  f1_train,
-            'f1_test':   f1_test,
-            'auc_train': auc_train,
-            'auc_test':  auc_test,
-            'hp_dict':   hp_dict}
-
-
 def cluster(X, plot, n_clust=2):
     """
     Plots a simple hierarchical clustering of the feature matrix X. Clustering
@@ -408,5 +410,71 @@ def distributions(y, plot):
     sns.distplot(y, hist=False, rug=True, color="r")
     sns.plt.savefig(plot)
     sns.plt.close()
+
+
+def pre_test(db, xcorr, predict, target_cutoff, plot, pct_variance=None):
+    """
+    A diagnostic pipeline for assessing the inputs to the classifier.
+
+    + Loads X and y. If y has multiple preditors, the top PC is calculated. The
+      vector is then thresholded at target_cutoff percentile.
+    + If pct_variance is defined, X is reduced using PCA to the number of
+      features required to capture that amount of variance (%).
+    + Plots a distribution of y, compressed to 1 PC.
+    + Saves a .csv with this compressed version of y.
+    + Thresholds y, and plots the top 3 PCs of X, with points colored by group
+      y. This plot should have no obvious structure.
+    + Plots a hierarchical clustering of the (possibly reduced) feature matrix
+      X.
+    + Uses MDMR to detect relationship between cognitive variables and MRI data.
+      Good v scores are ~ 0.1, or 10%.
+    """
+    logger.info('pre-test: detecting gross relationship between neural and cognitive data')
+    X = corr.calc_xbrain(db, db, xcorr)
+    X = clean(X)
+
+    # load y, and compress y to a single vector using PCA if required
+    y = utils.gather_dv(db, predict)
+    if len(y.shape) == 2 and y.shape[0] > 1:
+        y_1d = copy(pca_reduce(y.T))
+    else:
+        y_1d = copy(y)
+
+    # plot the y variable (1d) before generating classes
+    distributions(y_1d.T, os.path.join(plot, 'xbrain_y_dist.pdf'))
+
+    # print the top 3 PCs of X, colour coding by y group (diagnostic for site effects etc)
+    pca_plot(X, y_1d, plot)
+
+    # save the y vector before gathering classes
+    np.savetxt(os.path.join(plot, 'xbrain_y.csv'), y_1d, delimiter=',')
+
+    # convert y into classes, thresholding if required
+    if len(np.unique(y_1d)) > 10:
+        logger.info('splitting y into two groups: {} percentile cutoff'.format(target_cutoff))
+        y_groups = utils.make_dv_groups(y_1d, target_cutoff)
+    else:
+        y_groups = copy(y_1d)
+    y_groups = make_classes(y_groups)
+
+    # compress the number of features X if required
+    if pct_variance:
+        X = pca_reduce(X, n=X.shape[0], pct=pct_variance)
+
+    # save the X matrix
+    np.savetxt(os.path.join(plot, 'xbrain_X.csv'), X, delimiter=',')
+
+    # plot a hierarchical clustering of the feature matrix X
+    clst = cluster(X, plot)
+
+    # use MDMR to find a relationship between the X matrix and all y predictors
+    F, F_null, v = mdmr(y.T, X, method='euclidean')
+    thresholds = sig_cutoffs(F_null, two_sided=False)
+    if F > thresholds[1]:
+        logger.info('mdmr: relationship detected: F={} > {}, variance explained={}'.format(F, thresholds[1], v))
+    else:
+        logger.warn('mdmr: no relationship detected, variance explained={}'.format(v))
+
+    sys.exit()
 
 

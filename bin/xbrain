@@ -12,12 +12,13 @@ Options:
     --xcorr=TS             A comma-seperated list of timeseries .csv (2D) predictors to use for cross-brain correlation (inter-subject).
     --connectivity=CONN    A comma-seperated list of timeseries .csv (2D) predictors to use for connectivity (intra-subject).
     --statmaps=STATS       A comma-seperated list of statmap .nii.gz (3D) predictors.
-    --roi-mask=MASK        A ROI .nii.gz file with the same dimensions as all input statmaps and the same number of non-zero ROIs as there are unique timeseries.
     --predict=PREDICT      A comma-seperated list of column names in database to predict.
+    --roi-mask=MASK        A ROI .nii.gz file with the same dimensions as all input statmaps and the same number of non-zero ROIs as there are unique timeseries.
     --k=K                  Number of folds done for outer loop cross-validation [default: 10]
-    --pct-variance=PCTVAR  Uses PCA to compress the input features to the number required to retain at least this amount of variance (0-1).
-    --target-cutoff=CUTOFF Percentile cutoff to seperate the low and high y score group.
-    --target-group=GROUP1  Draw the xbrain template from this group [default: 1]
+    --pct-variance=PCTVAR  Uses PCA to compress X to retain at least this % of variance (0-1).
+    --mode=MODE            One of "multiclass", "target", "ysplit", "anomoly".
+    --y-cutoff=CUTOFF      Comma-seperated list of percentile cutoffs to seperate the low and high y score group. Used for ysplit mode. [default: 0.5]
+    --target-group=GROUP1  Draw the xbrain template from this group.
     --two-template=GROUP2  If defined, features are the difference between target-group and this group. [default: -1]
     --diagnostics          Run diagnostics on input data.
     --debug                Verbose outputs.
@@ -29,6 +30,31 @@ whether the similarities in neural architecture or activity in the brain (X) is
 predictive of non-neural variables of interest (Y). For example, demographics
 (age, sex), cognitive scores (IQ, TASIT), or clinical variables (medications
 taken, number of hospital visits in the last year).
+
+** modes **
+
+xbrain allows you to perform 4 kinds of classifiction experiments.
+
+"multiclass": takes the predict column as group labels and attempts to build a
+n-way classifier. Typically used to distinguish between multiple diagnostic or
+treatment groups. xcorr template drawn from --target-group. --two-template can
+be any other valid group.
+
+"target": takes the predict column as group labels and sets the target group to
+be group 1 (using --target-group), and all other labels to be group 0. Used to
+simplify the classification problem (e.g., diagnosis vs. no-diagnosis). xcorr
+template drawn from --target-group. If --two-template is defined, it is always
+drawn fom group 0.
+
+"ysplit": takes the predict column as a continuous cognitive score and splits it
+into a low and high score group. If multiple columns are submitted, uses PCA to
+extract the top PC and splits on this variable.  if y-cutoff is defined, splits
+at the defined percentile. y-cutoff can be a list of percentiles, in which case
+xbrain will test each. If y-cutoff is not defined, a median split is used (0.5).
+
+"anamoly": takes the input features and attempts to find outliers using the X
+data only (neuroimaging features). Then takes the input feature vector y and
+looks for any statistical difference between the in-group and outlier group.
 
 ** outer loop: stratified sample k fold cross validation**
 
@@ -75,10 +101,8 @@ import collections
 import logging
 import random
 import string
-from copy import copy
 
 import numpy as np
-import scipy as sp
 from scipy.stats import sem, mode
 import pandas as pd
 from sklearn.model_selection import StratifiedKFold
@@ -93,96 +117,6 @@ logger = logging.getLogger(os.path.basename(__file__))
 
 HOME = os.path.expanduser('~')
 
-def assert_columns(db, columns):
-    if not utils.is_column(db, columns):
-        logger.error('not all columns {} found'.format(columns))
-        sys.exit(1)
-
-
-def clean(X):
-    """
-    Replaces nan and inf values in numpy array with zero. If any columns are all
-    0, removes them completely.
-    """
-    X[np.isnan(X)] = 0
-    X[np.isinf(X)] = 0
-    logger.debug('X matrix has {} bad values (replaced with 0)'.format(np.sum(X == 0)))
-
-    idx_zero = np.where(np.sum(np.abs(X), axis=0) == 0)[0] # find all zero cols
-
-    if len(idx_zero) > 0:
-        logger.debug('removing {} columns in X that are all 0'.format(len(idx_zero)))
-        idx = np.arange(X.shape[1])
-        idx = np.setdiff1d(idx, idx_zeros)
-        X = X[:, idx]
-
-    return(X)
-
-
-def pre_test(db, xcorr, predict, target_cutoff, pct_variance=None):
-    """
-    A diagnostic pipeline for assessing the inputs to the classifier.
-
-    + Loads X and y. If y has multiple preditors, the top PC is calculated. The
-      vector is then thresholded at target_cutoff percentile.
-    + If pct_variance is defined, X is reduced using PCA to the number of
-      features required to capture that amount of variance (%).
-    + Plots a distribution of y, compressed to 1 PC.
-    + Saves a .csv with this compressed version of y.
-    + Thresholds y, and plots the top 3 PCs of X, with points colored by group
-      y. This plot should have no obvious structure.
-    + Plots a hierarchical clustering of the (possibly reduced) feature matrix
-      X.
-    + Uses MDMR to detect relationship between cognitive variables and MRI data.
-      Good v scores are ~ 0.1, or 10%.
-    """
-    logger.info('pre-test: detecting gross relationship between neural and cognitive data')
-    X = corr.calc_xbrain(db, db, xcorr)
-    X = clean(X)
-
-    # load y, and compress y to a single vector using PCA if required
-    y = utils.gather_dv(db, predict)
-    if len(y.shape) == 2 and y.shape[0] > 1:
-        y_1d = copy(stats.pca_reduce(y.T))
-    else:
-        y_1d = copy(y)
-
-    # plot the y variable (1d) before generating classes
-    stats.distributions(y_1d.T, os.path.join(HOME, 'xbrain_y_dist.pdf'))
-
-    # print the top 3 PCs of X, colour coding by y group (diagnostic for site effects etc)
-    stats.pca_plot(X, y_1d, HOME)
-
-    # save the y vector before gathering classes
-    np.savetxt(os.path.join(HOME, 'xbrain_y.csv'), y_1d, delimiter=',')
-
-    # convert y into classes, thresholding if required
-    if len(np.unique(y_1d)) > 10:
-        logger.info('splitting y into two groups: {} percentile cutoff'.format(target_cutoff))
-        y_groups = utils.make_dv_groups(y_1d, target_cutoff)
-    else:
-        y_groups = copy(y_1d)
-    y_groups = stats.make_classes(y_groups)
-
-    # compress the number of features X if required
-    if pct_variance:
-        X = stats.pca_reduce(X, n=X.shape[0], pct=pct_variance)
-
-    # save the X matrix
-    np.savetxt(os.path.join(HOME, 'xbrain_X.csv'), X, delimiter=',')
-
-    # plot a hierarchical clustering of the feature matrix X
-    clst = stats.cluster(X, HOME)
-
-    # use MDMR to find a relationship between the X matrix and all y predictors
-    F, F_null, v = stats.mdmr(y.T, X, method='euclidean')
-    thresholds = stats.sig_cutoffs(F_null, two_sided=False)
-    if F > thresholds[1]:
-        logger.info('pre-test: relationship detected: F={} > {}, variance explained={}'.format(F, thresholds[1], v))
-    else:
-        logger.warn('pre-test: no relationship detected, variance explained={}'.format(v))
-
-    sys.exit()
 
 def main():
     arguments = docopt(__doc__)
@@ -194,9 +128,7 @@ def main():
     roi_mask      = arguments['--roi-mask']
     k             = int(arguments['--k'])
     pct_variance  = float(arguments['--pct-variance'])
-
-    print(arguments['--target-cutoff'])
-    target_cutoff = float(arguments['--target-cutoff'])
+    y_cutoff      = float(arguments['--y-cutoff'])
     target_group  = int(arguments['--target-group'])
     two_template  = int(arguments['--two-template'])
     diagnostics   = arguments['--diagnostics']
@@ -229,28 +161,19 @@ def main():
             logger.error('two_template group {} should be different than the target group {}'.format(two_template, target_group))
             sys.exit(1)
 
-    # check all defined database columns
-    columns = []
-    if statmaps:
-        statmaps = statmaps.split(',')
-        assert_columns(db, statmaps)
-        columns.extend(statmaps)
+    # gather and reduce to defined database columns
+    statmaps = utils.split_columns(statmaps)
+    xcorr = utils.split_columns(xcorr)
+    connectivity = utils.split_columns(connectivity)
+    predict = utils.split_columns(predict)
 
-    if xcorr:
-        xcorr = xcorr.split(',')
-        assert_columns(db, xcorr)
-        columns.extend(xcorr)
+   columns = []
+    for variable in [statmaps, xcorr, connectivity, predict]:
+        if variable:
+            variable = variable.split(',')
+            assert_columns(db, variable)
+            columns.extend(variable)
 
-    if connectivity:
-        connectivity = connectivity.split(',')
-        assert_columns(db, connectivity)
-        columns.extend(connectivity)
-
-    predict = predict.split(',')
-    assert_columns(db, predict)
-    columns.extend(predict)
-
-    # reduce data to defined columns
     columns = list(set(columns))
     db = db[columns]
     n_pre = len(db)
@@ -259,7 +182,7 @@ def main():
     logger.debug('clean rows in database: {}/{}'.format(len(db), n_pre))
 
     if diagnostics:
-        pre_test(db, xcorr, predict, target_cutoff, pct_variance=pct_variance)
+        stats.pre_test(db, xcorr, predict, target_cutoff, pct_variance=pct_variance)
 
     logger.debug('generating dependent variable vector y')
     y = utils.gather_dv(db, predict)

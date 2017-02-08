@@ -8,50 +8,15 @@ from copy import copy
 
 logger = logging.getLogger(__name__)
 
-def reorder(X, idx, symm=False):
-    """
-    Reorders the rows of a matrix. If symm is True, this simultaneously reorders
-    the columns and rows of a matrix by the given index.
-    """
-    if symm:
-        assert_square(X)
-        X = X[:, idx]
-
-    if X.shape[0] != len(idx):
-        logger.warn('reorg IDX length {} does not match the rows of X {}'.format(len(idx), X.shape[0]))
-
-    X = X[idx, :]
-
-    return(X)
+def assert_columns(db, columns):
+    if not utils.is_column(db, columns):
+        logger.error('not all columns {} found'.format(columns))
+        sys.exit(1)
 
 
 def assert_square(X):
     if len(X.shape) != 2 or X.shape[0] != X.shape[1]:
         raise Exception("Input matrix must be square")
-
-
-def full_rank(X):
-    """Ensures input matrix X is not rank deficient."""
-    if len(X.shape) == 1:
-        return True
-
-    k = X.shape[1]
-    rank = np.linalg.matrix_rank(X)
-    if rank < k:
-        return False
-
-    return True
-
-
-def scrub_data(x):
-    """
-    Removes NaNs from a vector, and raises an exception if the data is empty.
-    """
-    x[np.isnan(x)] = 0
-    if np.sum(x) == 0:
-        raise Exception('vector contains no information')
-
-    return x
 
 
 def is_probability(x):
@@ -83,6 +48,76 @@ def is_even(n):
     if n % 2 == 0:
         return True
     return False
+
+
+def split_columns(variable):
+    """
+    Splits the input variable, which is either None or a comma delimited string.
+    """
+    if variable:
+        return(variable.split(','))
+    return(variable)
+
+
+def clean(X):
+    """
+    Replaces nan and inf values in numpy array with zero. If any columns are all
+    0, removes them completely.
+    """
+    X[np.isnan(X)] = 0
+    X[np.isinf(X)] = 0
+    logger.debug('X matrix has {} bad values (replaced with 0)'.format(np.sum(X == 0)))
+
+    idx_zero = np.where(np.sum(np.abs(X), axis=0) == 0)[0] # find all zero cols
+
+    if len(idx_zero) > 0:
+        logger.debug('removing {} columns in X that are all 0'.format(len(idx_zero)))
+        idx = np.arange(X.shape[1])
+        idx = np.setdiff1d(idx, idx_zeros)
+        X = X[:, idx]
+
+    return(X)
+
+
+def reorder(X, idx, symm=False):
+    """
+    Reorders the rows of a matrix. If symm is True, this simultaneously reorders
+    the columns and rows of a matrix by the given index.
+    """
+    if symm:
+        assert_square(X)
+        X = X[:, idx]
+
+    if X.shape[0] != len(idx):
+        logger.warn('reorg IDX length {} does not match the rows of X {}'.format(len(idx), X.shape[0]))
+
+    X = X[idx, :]
+
+    return(X)
+
+
+def full_rank(X):
+    """Ensures input matrix X is not rank deficient."""
+    if len(X.shape) == 1:
+        return True
+
+    k = X.shape[1]
+    rank = np.linalg.matrix_rank(X)
+    if rank < k:
+        return False
+
+    return True
+
+
+def scrub_data(x):
+    """
+    Removes NaNs from a vector, and raises an exception if the data is empty.
+    """
+    x[np.isnan(x)] = 0
+    if np.sum(x) == 0:
+        raise Exception('vector contains no information')
+
+    return x
 
 
 def gather_dv(db, columns):
