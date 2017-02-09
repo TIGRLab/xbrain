@@ -152,8 +152,8 @@ def main():
         logger.error('method {} invalid, pick form "multiclass", "target", "ysplit", "anomoly"'.format(method))
         sys.exit(1)
 
-    if method == 'ysplit' and not utils.is_probability(target_cutoff):
-        logger.error('ysplit: target_cutoff percentile {} invalid, should be [0-1]'.format(target_cutoff))
+    if method == 'ysplit' and not utils.is_probability(y_cutoff):
+        logger.error('ysplit: target_cutoff percentile {} invalid, should be [0-1]'.format(y_cutoff))
         sys.exit(1)
 
     if method == 'ysplit':
@@ -198,15 +198,15 @@ def main():
     y = utils.gather_dv(db, predict)
 
     if diagnostics:
-        stats.pre_test(db, xcorr, predict, target_cutoff, pct_variance=pct_variance)
+        stats.pre_test(db, xcorr, predict, y_cutoff, pct_variance=pct_variance)
 
     if len(y.shape) == 2 and y.shape[0] > 1:
         logger.info('using PCA to reduce {} dvs in y down to 1 component'.format(y.shape[0]))
         y = stats.pca_reduce(y.T)
 
     if method == 'ysplit':
-        logger.info('ysplit: partitioning y at the {}th percentile'.format(target_cutoff))
-        y = utils.make_dv_groups(y, target_cutoff)
+        logger.info('ysplit: partitioning y at the {}th percentile'.format(y_cutoff))
+        y = utils.make_dv_groups(y, y_cutoff)
     y = stats.make_classes(y)
 
     # add a column with the preprocessed y groups
