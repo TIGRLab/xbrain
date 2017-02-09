@@ -13,7 +13,7 @@ from scipy.stats import lognorm, randint, uniform, mode
 import scipy.cluster.hierarchy as sch
 from scipy.spatial.distance import pdist, squareform
 
-from sklearn import preprocessing
+from sklearn.preprocessing import scale, LabelEncoder, label_binarize
 from sklearn.model_selection import RandomizedSearchCV
 from sklearn.decomposition import PCA
 from sklearn.linear_model import LogisticRegression
@@ -33,7 +33,7 @@ import xbrain.utils as utils
 logger = logging.getLogger(__name__)
 
 
-def classify(X_train, X_test, y_train, y_test, model='SVC'):
+def classify(X_train, X_test, y_train, y_test, method, model='SVC'):
     """
     Trains the selected classifier once on the submitted training data, and
     compares the predicted outputs of the test data with the real labels.
@@ -49,7 +49,6 @@ def classify(X_train, X_test, y_train, y_test, model='SVC'):
     n_features = X_train.shape[1]
 
     hp_dict = collections.defaultdict(list)
-    r_train, r_test, R2_train, R2_test, MSE_train, MSE_test = [], [], [], [], [], []
 
     # for testing various models, includes grid search settings
     if model == 'Logistic':
@@ -79,13 +78,14 @@ def classify(X_train, X_test, y_train, y_test, model='SVC'):
         sys.exit(1)
 
     if scale_data:
-        X_train = preprocessing.scale(X_train)
-        X_test = preprocessing.scale(X_test)
+        X_train = scale(X_train)
+        X_test = scale(X_test)
 
     # perform randomized hyperparameter search to find optimal settings
     logger.debug('Inner Loop: Randomized CV of hyperparameters for this fold')
     clf = RandomizedSearchCV(model_clf, hyperparams, n_iter=100)
     clf.fit(X_train, y_train)
+    logger.debug('Inner Loop complete, best parameters found:\n{}'.format(clf.best_estimator_.get_params()))
 
     # collect all the best hyperparameters found in the cv loop
     for hp in hyperparams:
@@ -94,11 +94,24 @@ def classify(X_train, X_test, y_train, y_test, model='SVC'):
     # collect performance metrics
     acc_train = accuracy_score(y_train, clf.predict(X_train))
     acc_test = accuracy_score(y_test, clf.predict(X_test))
-    f1_train = f1_score(y_train, clf.predict(X_train))
-    f1_test = f1_score(y_test, clf.predict(X_test))
-    auc_train = roc_auc_score(y_train, clf.predict(X_train))
-    auc_test = roc_auc_score(y_test, clf.predict(X_test))
 
+    if method == 'multiclass':
+        f1_train = f1_score(y_train, clf.predict(X_train), average='weighted')
+        f1_test = f1_score(y_test, clf.predict(X_test), average='weighted')
+        auc_train = 0
+        auc_test = 0
+    else:
+        f1_train = f1_score(y_train, clf.predict(X_train))
+        f1_test = f1_score(y_test, clf.predict(X_test))
+        auc_train = roc_auc_score(y_train, clf.predict(X_train))
+        auc_test = roc_auc_score(y_test, clf.predict(X_test))
+
+
+    #if method == 'target' or method == 'ysplit':
+    # throws an error in the multiclass case:
+    # "Target is multiclass but average='binary'. Please choose another average setting."
+    # Related to sklearn.metrics.precision_score, but unsure if classification_report
+    # allows you to alter the call to precision_score. Perhaps a bug should be filed.
     logger.debug('train data performance:\n{}'.format(classification_report(y_train, clf.predict(X_train))))
     logger.debug('test data performance:\n{}'.format(classification_report(y_test, clf.predict(X_test))))
     logger.debug('TRAIN: predicted,actual values\n{}\n{}'.format(clf.predict(X_train), y_train))
@@ -373,9 +386,9 @@ def sign_flip(X_transformed, X):
 
 def make_classes(y):
     """transforms label values for classification"""
-    le = preprocessing.LabelEncoder()
+    le = LabelEncoder()
     le.fit(y)
-    logger.debug('unique transformed y groups: {}'.format(np.unique(le.transform(y))))
+    logger.info('y labels {} transformed to {}'.format(le.classes_, np.arange(len(le.classes_))))
     return(le.transform(y))
 
 

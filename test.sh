@@ -10,14 +10,14 @@
 #    --debug \
 #    /projects/jviviano/data/xbrain/assets/database_xbrain.csv
 
-echo 'diagnosis prediction, CMH, 50% PCA variance retained'
-#    --xcorr='ts_imi_resid,ts_obs_resid' \
+echo 'multiclass diagnosis prediction using resting state, CMH, 80% PCA variance retained'
 ./bin/xbrain \
+    --xcorr='ts_imi_resid,ts_obs_resid' \
     --connectivity='ts_rst' \
     --predict='Diagnosis' \
-    --target-cutoff=0.5 \
-    --pct-variance=0.5 \
+    --pct-variance=0.80 \
     --target-group=0 \
+    --method='multiclass' \
     --debug \
     /projects/jviviano/data/xbrain/assets/database_xbrain_CMH.csv
 

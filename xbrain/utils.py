@@ -9,7 +9,7 @@ from copy import copy
 logger = logging.getLogger(__name__)
 
 def assert_columns(db, columns):
-    if not utils.is_column(db, columns):
+    if not is_column(db, columns):
         logger.error('not all columns {} found'.format(columns))
         sys.exit(1)
 

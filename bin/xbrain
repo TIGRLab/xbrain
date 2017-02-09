@@ -16,10 +16,10 @@ Options:
     --roi-mask=MASK        A ROI .nii.gz file with the same dimensions as all input statmaps and the same number of non-zero ROIs as there are unique timeseries.
     --k=K                  Number of folds done for outer loop cross-validation [default: 10]
     --pct-variance=PCTVAR  Uses PCA to compress X to retain at least this % of variance (0-1).
-    --mode=MODE            One of "multiclass", "target", "ysplit", "anomoly".
+    --method=METHOD        One of "multiclass", "target", "ysplit", "anomaly".
     --y-cutoff=CUTOFF      Comma-seperated list of percentile cutoffs to seperate the low and high y score group. Used for ysplit mode. [default: 0.5]
     --target-group=GROUP1  Draw the xbrain template from this group.
-    --two-template=GROUP2  If defined, features are the difference between target-group and this group. [default: -1]
+    --two-template=GROUP2  If defined, features are the difference between target-group and this group.
     --diagnostics          Run diagnostics on input data.
     --debug                Verbose outputs.
 
@@ -31,7 +31,7 @@ predictive of non-neural variables of interest (Y). For example, demographics
 (age, sex), cognitive scores (IQ, TASIT), or clinical variables (medications
 taken, number of hospital visits in the last year).
 
-** modes **
+** methods **
 
 xbrain allows you to perform 4 kinds of classifiction experiments.
 
@@ -52,7 +52,7 @@ extract the top PC and splits on this variable.  if y-cutoff is defined, splits
 at the defined percentile. y-cutoff can be a list of percentiles, in which case
 xbrain will test each. If y-cutoff is not defined, a median split is used (0.5).
 
-"anamoly": takes the input features and attempts to find outliers using the X
+"anomaly": takes the input features and attempts to find outliers using the X
 data only (neuroimaging features). Then takes the input feature vector y and
 looks for any statistical difference between the in-group and outlier group.
 
@@ -72,10 +72,10 @@ against the test set, and performance measures are averaged across all folds.
 
 **inner loop: hyperparamater cross validation**
 
-3 randomized fold cross validation is done to test all submitted hyperperameters
-on splits of the training data. The best model is brought forward for testing.
-
-The grid search for each model is defined in xbrain.stats.classify.
+randomized cross validation (3 folds per iteration, 100 iterations) is done to
+test all hyperperameters on splits of the training data. The best model is
+brought forward for testing. The hyperparameters for each model are defined in
+xbrain.stats.classify.
 
 **features**
 
@@ -121,22 +121,22 @@ HOME = os.path.expanduser('~')
 def main():
     arguments = docopt(__doc__)
     database      = arguments['<database>']
-    xcorr    = arguments['--xcorr']
+    xcorr         = arguments['--xcorr']
     connectivity  = arguments['--connectivity']
     statmaps      = arguments['--statmaps']
     predict       = arguments['--predict']
     roi_mask      = arguments['--roi-mask']
     k             = int(arguments['--k'])
     pct_variance  = float(arguments['--pct-variance'])
+    method        = arguments['--method']
     y_cutoff      = float(arguments['--y-cutoff'])
-    target_group  = int(arguments['--target-group'])
-    two_template  = int(arguments['--two-template'])
+    target_group  = arguments['--target-group']
+    two_template  = arguments['--two-template']
     diagnostics   = arguments['--diagnostics']
     debug         = arguments['--debug']
 
     global HOME
 
-    # init the logger
     logger.info('starting')
     if debug:
         logger.setLevel(logging.DEBUG)
@@ -148,15 +148,30 @@ def main():
         logger.error('failed to parse input .csv database {}',format(database))
         sys.exit(1)
 
-    if not utils.is_probability(target_cutoff):
-        logger.error('group target_cutoff percentile {} invalid, should be (0-1)'.format(target_cutoff))
+    if method not in ['multiclass', 'target', 'ysplit', 'anomaly']:
+        logger.error('method {} invalid, pick form "multiclass", "target", "ysplit", "anomoly"'.format(method))
         sys.exit(1)
+
+    if method == 'ysplit' and not utils.is_probability(target_cutoff):
+        logger.error('ysplit: target_cutoff percentile {} invalid, should be [0-1]'.format(target_cutoff))
+        sys.exit(1)
+
+    if method == 'ysplit':
+        target_group = 1
+
+    if method == 'multiclass' or method == 'target':
+        if target_group:
+            target_group = int(target_group)
+        elif xcorr:
+            logger.error('target_group must be defined for "multiclass" and "target" modes when calculating xcorr')
+            sys.exit(1)
 
     if pct_variance:
         if not utils.is_probability(pct_variance):
             logger.error('pct variance retained {} invalid, should be (0-1)'.format(pct_variance))
 
-    if two_template > -1:
+    if two_template:
+        two_template = int(two_template)
         if two_template == target_group:
             logger.error('two_template group {} should be different than the target group {}'.format(two_template, target_group))
             sys.exit(1)
@@ -167,45 +182,43 @@ def main():
     connectivity = utils.split_columns(connectivity)
     predict = utils.split_columns(predict)
 
-   columns = []
+    columns = []
     for variable in [statmaps, xcorr, connectivity, predict]:
         if variable:
-            variable = variable.split(',')
-            assert_columns(db, variable)
+            utils.assert_columns(db, variable)
             columns.extend(variable)
 
     columns = list(set(columns))
     db = db[columns]
     n_pre = len(db)
     db = db.dropna(axis=0)
-    logger.debug('columns in reduced database: {}'.format(columns))
-    logger.debug('clean rows in database: {}/{}'.format(len(db), n_pre))
+    logger.debug('database cols: {}, rows: {}/{}'.format(columns, len(db), n_pre))
+
+    logger.debug('generating dependent variable vector y')
+    y = utils.gather_dv(db, predict)
 
     if diagnostics:
         stats.pre_test(db, xcorr, predict, target_cutoff, pct_variance=pct_variance)
 
-    logger.debug('generating dependent variable vector y')
-    y = utils.gather_dv(db, predict)
     if len(y.shape) == 2 and y.shape[0] > 1:
         logger.info('using PCA to reduce {} dvs in y down to 1 component'.format(y.shape[0]))
         y = stats.pca_reduce(y.T)
 
-    # split y into groups if the data is continuous
-    if len(np.unique(y)) > 10:
-        logger.info('splitting y into two groups: {} percentile cutoff'.format(target_cutoff))
+    if method == 'ysplit':
+        logger.info('ysplit: partitioning y at the {}th percentile'.format(target_cutoff))
         y = utils.make_dv_groups(y, target_cutoff)
     y = stats.make_classes(y)
 
     # add a column with the preprocessed y groups
-    y_uid = ''.join(random.choice(string.ascii_uppercase) for _ in range(10))
-    db[y_uid] = y
+    y_preprocessed = ''.join(random.choice(string.ascii_uppercase) for _ in range(10))
+    db[y_preprocessed] = y
 
     # ensure target_group, two_template group is one of the groups in y
-    if target_group not in y:
+    if xcorr and target_group not in y:
         logger.error('target group {} not in y: {}'.format(target_group, np.unique(y)))
         sys.exit(1)
 
-    if two_template > -1:
+    if two_template:
         if two_template not in y:
             logger.error('two template group {} not in y: {}'.format(two_template, np.unique(y)))
             sys.exit(1)
@@ -230,12 +243,12 @@ def main():
         # calculate X_xcorr from a training sample template
         if xcorr:
             logger.debug('xcorr: calculating template 1 (group {})'.format(target_group))
-            template_1 = corr.find_template(db.iloc[train_idx], y_uid, xcorr, group=target_group)
+            template_1 = corr.find_template(db.iloc[train_idx], y_preprocessed, xcorr, group=target_group)
             X_xcorr = corr.calc_xbrain(template_1, db, xcorr)
 
-            if two_template > -1:
+            if two_template:
                 logger.debug('xcorr: calculating template 2 (group {})'.format(two_template))
-                template_2 = corr.find_template(db.iloc[train_idx], y_uid, xcorr, group=two_template)
+                template_2 = corr.find_template(db.iloc[train_idx], y_preprocessed, xcorr, group=two_template)
                 X2_xcorr = corr.calc_xbrain(template_2, db, xcorr)
                 logger.debug('xcorr: two template analysis (group {} - group {})'.format(target_group, two_template))
                 X_xcorr = X_xcorr - X2_xcorr
@@ -252,7 +265,7 @@ def main():
             sys.exit(1)
 
         # remove nonsense values from X
-        X = clean(X)
+        X = utils.clean(X)
 
         # split X into test and train groups
         X_train = X[train_idx, :]
@@ -267,7 +280,7 @@ def main():
 
         # run the classifier
         try:
-            results = stats.classify(X_train, X_test, y_train, y_test)
+            results = stats.classify(X_train, X_test, y_train, y_test, method)
         except Exception as e:
             logger.error(e)
             sys.exit(1)
