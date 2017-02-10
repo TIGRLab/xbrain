@@ -17,7 +17,7 @@ Options:
     --k=K                  Number of folds done for outer loop cross-validation [default: 10]
     --pct-variance=PCTVAR  Uses PCA to compress X to retain at least this % of variance (0-1).
     --method=METHOD        One of "multiclass", "target", "ysplit", "anomaly".
-    --y-cutoff=CUTOFF      Comma-seperated list of percentile cutoffs to seperate the low and high y score group. Used for ysplit mode. [default: 0.5]
+    --y-cutoff=CUTOFF      Percentile cutoff to seperate the low and high y score group. Used for ysplit mode. If 'auto', uses a gaussian fit to guess what percentage of the data in y are outliers [default: 0.5]
     --target-group=GROUP1  Draw the xbrain template from this group.
     --two-template=GROUP2  If defined, features are the difference between target-group and this group.
     --diagnostics          Run diagnostics on input data.
@@ -129,7 +129,7 @@ def main():
     k             = int(arguments['--k'])
     pct_variance  = float(arguments['--pct-variance'])
     method        = arguments['--method']
-    y_cutoff      = float(arguments['--y-cutoff'])
+    y_cutoff      = arguments['--y-cutoff']
     target_group  = arguments['--target-group']
     two_template  = arguments['--two-template']
     diagnostics   = arguments['--diagnostics']
@@ -152,8 +152,8 @@ def main():
         logger.error('method {} invalid, pick form "multiclass", "target", "ysplit", "anomoly"'.format(method))
         sys.exit(1)
 
-    if method == 'ysplit' and not utils.is_probability(y_cutoff):
-        logger.error('ysplit: target_cutoff percentile {} invalid, should be [0-1]'.format(y_cutoff))
+    if method == 'ysplit' and y_cutoff != 'auto' and not utils.is_probability(y_cutoff):
+        logger.error('ysplit: target_cutoff percentile {} invalid, should be [0-1] or "auto"'.format(y_cutoff))
         sys.exit(1)
 
     if method == 'ysplit':
@@ -165,6 +165,10 @@ def main():
         elif xcorr:
             logger.error('target_group must be defined for "multiclass" and "target" modes when calculating xcorr')
             sys.exit(1)
+
+    if method == 'anomaly' and two_template:
+        logger.warning('anomaly mode does not allow for two template analysis, ignoring')
+        two_template = None
 
     if pct_variance:
         if not utils.is_probability(pct_variance):
@@ -205,23 +209,30 @@ def main():
         y = stats.pca_reduce(y.T)
 
     if method == 'ysplit':
-        logger.info('ysplit: partitioning y at the {}th percentile'.format(y_cutoff))
-        y = utils.make_dv_groups(y, y_cutoff)
-    y = stats.make_classes(y)
+        if y_cutoff == 'auto':
+            y = stats.find_outliers(y)
+        else:
+            y = utils.make_dv_groups(y, y_cutoff)
+
+    if method == 'anomaly':
+        y = stats.find_outliers(y)
+    else:
+        y = stats.make_classes(y)
 
     # add a column with the preprocessed y groups
     y_preprocessed = ''.join(random.choice(string.ascii_uppercase) for _ in range(10))
     db[y_preprocessed] = y
 
     # ensure target_group, two_template group is one of the groups in y
-    if xcorr and target_group not in y:
-        logger.error('target group {} not in y: {}'.format(target_group, np.unique(y)))
-        sys.exit(1)
-
-    if two_template:
-        if two_template not in y:
-            logger.error('two template group {} not in y: {}'.format(two_template, np.unique(y)))
+    if method != 'anomaly':
+        if xcorr and target_group not in y:
+            logger.error('target group {} not in y: {}'.format(target_group, np.unique(y)))
             sys.exit(1)
+
+        if two_template:
+            if two_template not in y:
+                logger.error('two template group {} not in y: {}'.format(two_template, np.unique(y)))
+                sys.exit(1)
 
     # stores outputs across folds
     acc_train, acc_test, f1_train, f1_test, auc_train, auc_test = [], [], [], [], [], []
@@ -243,7 +254,10 @@ def main():
         # calculate X_xcorr from a training sample template
         if xcorr:
             logger.debug('xcorr: calculating template 1 (group {})'.format(target_group))
-            template_1 = corr.find_template(db.iloc[train_idx], y_preprocessed, xcorr, group=target_group)
+            if method == 'anomaly':
+                template_1 = corr.find_template(db.iloc[train_idx], y_preprocessed, xcorr)
+            else:
+                template_1 = corr.find_template(db.iloc[train_idx], y_preprocessed, xcorr, group=target_group)
             X_xcorr = corr.calc_xbrain(template_1, db, xcorr)
 
             if two_template:
@@ -278,7 +292,6 @@ def main():
 
         corr.plot_X(X_train, HOME, title='test-vs-train', X2=X_test)
 
-        # run the classifier
         try:
             results = stats.classify(X_train, X_test, y_train, y_test, method)
         except Exception as e:

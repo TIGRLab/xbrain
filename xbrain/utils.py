@@ -143,6 +143,7 @@ def make_dv_groups(y, cutoff):
     the submitted percentile cutoff are set to 0, and the rest are set to 1.
     Used to turn continuous variables into groups for outlier detection.
     """
+    logger.info('partitioning y at the {}th percentile'.format(cutoff*100))
     cutoff = np.percentile(y, cutoff*100)
     idx_lo = np.where(y < cutoff)[0]
     idx_hi = np.where(y >= cutoff)[0]

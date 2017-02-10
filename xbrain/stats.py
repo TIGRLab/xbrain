@@ -1,7 +1,8 @@
 #!/usr/bin/env python
 """Routines for relating neural activity with clinical variables."""
 
-import os, sys, glob, copy
+import os, sys, glob
+from copy import copy
 import collections
 import logging
 import random
@@ -9,6 +10,7 @@ import string
 
 import numpy as np
 from scipy import linalg
+from scipy.optimize import curve_fit
 from scipy.stats import lognorm, randint, uniform, mode
 import scipy.cluster.hierarchy as sch
 from scipy.spatial.distance import pdist, squareform
@@ -18,7 +20,7 @@ from sklearn.model_selection import RandomizedSearchCV
 from sklearn.decomposition import PCA
 from sklearn.linear_model import LogisticRegression
 from sklearn.svm import LinearSVC
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestClassifier, IsolationForest
 from sklearn.metrics import classification_report, accuracy_score, f1_score, roc_auc_score
 
 import matplotlib
@@ -33,7 +35,7 @@ import xbrain.utils as utils
 logger = logging.getLogger(__name__)
 
 
-def classify(X_train, X_test, y_train, y_test, method, model='SVC'):
+def classify(X_train, X_test, y_train, y_test, method):
     """
     Trains the selected classifier once on the submitted training data, and
     compares the predicted outputs of the test data with the real labels.
@@ -47,10 +49,19 @@ def classify(X_train, X_test, y_train, y_test, method, model='SVC'):
         raise Exception('X_test shape {} does not equal y_test shape {}'.format(X_test.shape[0], y_test.shape[0]))
 
     n_features = X_train.shape[1]
-
     hp_dict = collections.defaultdict(list)
 
-    # for testing various models, includes grid search settings
+    # use AUC score for unbalanced methods b/c outliers are more interesting
+    if method == 'anomaly':
+        scoring = 'roc_auc'
+        model = 'RIF'
+    elif method == 'ysplit':
+        scoring = 'roc_auc'
+        model = 'SVC'
+    else:
+        scoring = None
+        model = 'SVC'
+
     if model == 'Logistic':
         model_clf = LogisticRegression()
         hyperparams = {'C': [0.2, 0.6, 0.8, 1, 1.2] }
@@ -66,46 +77,63 @@ def classify(X_train, X_test, y_train, y_test, method, model='SVC'):
         feat_imp = True
     elif model == 'RFC':
         model_clf = RandomForestClassifier(n_jobs=6)
-        hyperparams =  {'class_weight': ['balanced'],
-                        'n_estimators': [1000],
-                        'min_samples_split': randint(int(n_features*0.025), int(n_features*0.2)),
-                        'min_samples_leaf': randint(int(n_features*0.025), int(n_features*0.2)),
-                        'criterion': ['gini', 'entropy']}
+        hyperparams = {'class_weight': ['balanced'],
+                       'n_estimators': [1000],
+                       'min_samples_split': randint(int(n_features*0.025), int(n_features*0.2)),
+                       'min_samples_leaf': randint(int(n_features*0.025), int(n_features*0.2)),
+                       'criterion': ['gini', 'entropy']}
         scale_data = False
         feat_imp = True
-    else:
-        logger.error('invalid model type {}'.format(model))
-        sys.exit(1)
+    elif model == 'RIF':
+        pct_outliers = len(np.where(y_train == -1)[0]) / float(len(y_train))
+        model_clf = IsolationForest(n_jobs=6, n_estimators=1000, contamination=pct_outliers)
+        hyperparams = {'n_estimators': [1000],
+                       'contamination': [pct_outliers],
+                       'max_samples': [n_features]}
+        scale_data = False
+        feat_imp = True
 
     if scale_data:
         X_train = scale(X_train)
         X_test = scale(X_test)
 
     # perform randomized hyperparameter search to find optimal settings
-    logger.debug('Inner Loop: Randomized CV of hyperparameters for this fold')
-    clf = RandomizedSearchCV(model_clf, hyperparams, n_iter=100)
-    clf.fit(X_train, y_train)
-    logger.debug('Inner Loop complete, best parameters found:\n{}'.format(clf.best_estimator_.get_params()))
+    if method == 'anomaly':
+        clf = model_clf
+        clf.fit(X_train)
+        hp_dict = hyperparams
+    else:
+        logger.debug('Inner Loop: Randomized CV of hyperparameters for this fold')
+        clf = RandomizedSearchCV(model_clf, hyperparams, n_iter=100, scoring=scoring)
+        clf.fit(X_train, y_train)
+        logger.debug('Inner Loop complete, best parameters found:\n{}'.format(clf.best_estimator_.get_params()))
 
-    # collect all the best hyperparameters found in the cv loop
-    for hp in hyperparams:
-        hp_dict[hp].append(clf.best_estimator_.get_params()[hp])
+        # collect all the best hyperparameters found in the cv loop
+        for hp in hyperparams:
+            hp_dict[hp].append(clf.best_estimator_.get_params()[hp])
+
+    X_train_pred = clf.predict(X_train)
+    X_test_pred = clf.predict(X_test)
+
+    # make coding of anomalys like other classifiers
+    if method == 'anomaly':
+        X_train_pred[X_train_pred == -1] = 0
+        X_test_pred[X_test_pred == -1] = 0
 
     # collect performance metrics
-    acc_train = accuracy_score(y_train, clf.predict(X_train))
-    acc_test = accuracy_score(y_test, clf.predict(X_test))
+    acc_train = accuracy_score(y_train, X_train_pred)
+    acc_test = accuracy_score(y_test, X_test_pred)
 
     if method == 'multiclass':
-        f1_train = f1_score(y_train, clf.predict(X_train), average='weighted')
-        f1_test = f1_score(y_test, clf.predict(X_test), average='weighted')
+        f1_train = f1_score(y_train, X_train_pred, average='weighted')
+        f1_test = f1_score(y_test, X_test_pred, average='weighted')
         auc_train = 0
         auc_test = 0
     else:
-        f1_train = f1_score(y_train, clf.predict(X_train))
-        f1_test = f1_score(y_test, clf.predict(X_test))
-        auc_train = roc_auc_score(y_train, clf.predict(X_train))
-        auc_test = roc_auc_score(y_test, clf.predict(X_test))
-
+        f1_train = f1_score(y_train, X_train_pred)
+        f1_test = f1_score(y_test, X_test_pred)
+        auc_train = roc_auc_score(y_train, X_train_pred)
+        auc_test = roc_auc_score(y_test, X_test_pred)
 
     #if method == 'target' or method == 'ysplit':
     # throws an error in the multiclass case:
@@ -114,8 +142,8 @@ def classify(X_train, X_test, y_train, y_test, method, model='SVC'):
     # allows you to alter the call to precision_score. Perhaps a bug should be filed.
     logger.debug('train data performance:\n{}'.format(classification_report(y_train, clf.predict(X_train))))
     logger.debug('test data performance:\n{}'.format(classification_report(y_test, clf.predict(X_test))))
-    logger.debug('TRAIN: predicted,actual values\n{}\n{}'.format(clf.predict(X_train), y_train))
-    logger.debug('TEST:  predicted,actual values\n{}\n{}'.format(clf.predict(X_test), y_test))
+    logger.debug('TRAIN: predicted,actual values\n{}\n{}'.format(X_train_pred, y_train))
+    logger.debug('TEST:  predicted,actual values\n{}\n{}'.format(X_test_pred, y_test))
 
     # check feature importance (QC for HC importance)
     # for fid in np.arange(10):
@@ -132,6 +160,12 @@ def classify(X_train, X_test, y_train, y_test, method, model='SVC'):
             'hp_dict':   hp_dict}
 
 
+def outlier(X_train, X_test, y_train, y_test, method):
+    """
+    http://scikit-learn.org/stable/modules/outlier_detection.html
+    """
+    return None
+
 def r_to_z(R):
     """Fischer's r-to-z transform on a matrix (elementwise)."""
     return(0.5 * np.log((1+R)/(1-R)))
@@ -145,6 +179,54 @@ def r_to_d(R):
 def standardize(X):
     """z-scores each column of X."""
     return((X - X.mean(axis=0)) / X.std(axis=0))
+
+
+def gauss(x, *p):
+    """Model gaussian to fit to data."""
+    A, mu, sigma = p
+    return A*np.exp(-(x-mu)**2/(2.*sigma**2))
+
+
+def find_outliers(y):
+    """
+    Assumes y is the mixture of scores drawn from a normal distribution and
+    some unusual, unknown distribution. Fits a gaussian curve to y, and finds
+    that curve's mean and standard deviation. This model assumes that only 2.5%
+    of the data should fall below the -2*sigma line. Finds the actual percentage
+    of datapoints below that line, subtracts 2.5% from it (to account for the
+    expected percentage), and then flags all of those data points as outliers
+    with negative -1. Normal values are set to 1. Returns this modified y
+    vector, and the percentage of the data that are considered outliers.
+    """
+    binned_curve, bin_edges = np.histogram(y, bins=len(y)/10, density=True)
+    bin_centres = (bin_edges[:-1] + bin_edges[1:])/2
+    # initial curve search values
+    p0 = [1., 0., 1.]
+    coeff, var_matrix = curve_fit(gauss, bin_centres, binned_curve, p0=p0)
+
+    mean = coeff[1]
+    sd = coeff[2]
+
+    # interested in more than expected number of values below -2 SD
+    null_cutoff = mean - 2*sd
+    null_outliers_pct = 0.025 # 2.5% of data expected below 2 sd
+    real_outliers_pct = len(np.where(y < null_cutoff)[0]) / float(len(y))
+    diff_outliers_pct = real_outliers_pct - null_outliers_pct
+    diff_cutoff = np.percentile(y, diff_outliers_pct*100)
+
+    y_outliers = copy(y)
+    y_outliers[y <= diff_cutoff] = 0
+    y_outliers[y > diff_cutoff] = 1
+
+    logger.info('auto-partitioning y at the {}th percentile (non-gaussian outliers)'.format(diff_outliers_pct*100))
+
+    #fitted_curve = gauss(bin_centres, *coeff)
+    #plt.plot(bin_centres, binned_curve, color='k', label='y')
+    #plt.plot(bin_centres, fitted_curve, color='r', label='gaussian fit')
+    #plt.axvline(x=diff_cutoff, color='k', linestyle='--')
+    #plt.show()
+
+    return y_outliers
 
 
 def sig_cutoffs(null, two_sided=True):
