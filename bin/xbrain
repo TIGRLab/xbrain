@@ -279,10 +279,9 @@ def main():
 
         # dynamic functional connectivity: calculate group-wise states from training sample
         if dynamics:
-            # first, identify states for each group
+            # first, identify states for each group win_len=15, win_step=2
+            d_rs = corr.calc_dynamic_connectivity(db, dynamics, 30, 1)
             groups = np.unique(y_train)
-            # hard-coded: window length=16, window step size=8
-            d_rs = corr.calc_dynamic_connectivity(db, dynamics, 16, 8)
 
             for i, group in enumerate(groups):
                 logger.debug('dynamics: calculating states for group {}'.format(group))
@@ -311,7 +310,6 @@ def main():
                     X_dynamics = coeffs
                 else:
                     X_dynamics = np.vstack((X_dynamics, coeffs))
-                    print(X_dynamics)
 
         # compose X out of the appropriate matricies
         if xcorr and connectivity and dynamics:
@@ -331,6 +329,8 @@ def main():
         else:
             logger.error('X not defined: need xcorr, connectivity, or dynamics inputs')
             sys.exit(1)
+
+        logger.info('X features size {}'.format(X.shape))
 
         # remove nonsense values from X
         X = utils.clean(X)

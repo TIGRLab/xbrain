@@ -49,9 +49,11 @@
 #    --debug \
 #    /projects/jviviano/data/xbrain/assets/database_xbrain.csv
 
+echo 'diagnosis classification using dynamic functional connectivity analysis, all spins data'
 ./bin/xbrain \
     --dynamics='ts_rst' \
     --predict='Diagnosis' \
-    --method='multiclass' \
+    --method='target' \
+    --target-group=0 \
     --debug \
     /projects/jviviano/data/xbrain/assets/database_xbrain_SPN.csv

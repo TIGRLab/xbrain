@@ -47,7 +47,7 @@ def dynamic_connectivity(ts, win_length, win_step):
 
     # initialize the window
     idx_start = 0
-    idx_end = win_length-1 # correct for zero indexing
+    idx_end = win_length # no correction: 0 indexing balances numpy ranges
 
     # list of tuples denoting the start and end of each window
     windows = []
@@ -60,10 +60,48 @@ def dynamic_connectivity(ts, win_length, win_step):
     idx_triu = np.triu_indices(n_vox, k=1)
     output = np.zeros((len(idx_triu[0]), len(windows)))
 
+    # calculate taper (downweight early and late timepoints)
+    taper = np.atleast_2d(tukeywin(win_length)).T
+
     for i, window in enumerate(windows):
-        output[:, i] = np.corrcoef(ts[window[0]:window[1], :].T)[idx_triu]
+        # extract sample, apply taper
+        sample = ts[window[0]:window[1], :] * np.repeat(taper, n_vox, axis=1)
+        # keep upper triangle of correlation matrix
+        output[:, i] = np.corrcoef(sample.T)[idx_triu]
 
     return(output)
+
+
+def tukeywin(win_length, alpha=0.75):
+    """
+    The Tukey window, also known as the tapered cosine window, is a cosine lobe
+    of width alpha * N / 2 that is convolved with a rectangular window of width
+    (1 - alpha / 2). At alpha = 1 it becomes rectangular, and at alpha = 0 it
+    becomes a Hann window.
+
+    http://leohart.wordpress.com/2006/01/29/hello-world/
+    http://www.mathworks.com/access/helpdesk/help/toolbox/signal/tukeywin.html
+    """
+    # special cases
+    if alpha <= 0:
+        return np.ones(win_length)
+    elif alpha >= 1:
+        return np.hanning(win_length)
+
+    # normal case
+    x = np.linspace(0, 1, win_length)
+    window = np.ones(x.shape)
+
+    # first condition: 0 <= x < alpha/2
+    c1 = x < alpha/2
+    window[c1] = 0.5 * (1 + np.cos(2*np.pi/alpha * (x[c1] - alpha/2)))
+
+    # second condition already taken care of
+    # third condition 1 - alpha / 2 <= x <= 1
+    c3 = x >= (1 - alpha/2)
+    window[c3] = 0.5 * (1 + np.cos(2*np.pi/alpha * (x[c3] - 1 + alpha/2)))
+
+    return window
 
 
 def calc_dynamic_connectivity(db, connectivity, win_length, win_step):
@@ -85,6 +123,7 @@ def calc_dynamic_connectivity(db, connectivity, win_length, win_step):
                 logger.error(e)
                 sys.exit(1)
 
+            ts = pct_signal_change(ts)
             rs = dynamic_connectivity(ts, win_length, win_step)
 
             # for the first timeseries, initialize the output array

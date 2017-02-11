@@ -70,9 +70,10 @@ def classify(X_train, X_test, y_train, y_test, method):
         feat_imp = False
     elif model == 'SVC':
         model_clf = LinearSVC()
+        # scale normally == 0.1, testing 0.5 to explore larger values of C...
         hyperparams = {'class_weight': ['balanced'],
                        'tol': uniform(0.0001, 0.01),
-                       'C': lognorm(2, loc=0.0000001, scale=0.1),
+                       'C': lognorm(2, loc=0.0000001, scale=0.5),
                        'max_iter': [10000]}
         scale_data = True
         feat_imp = True
@@ -105,7 +106,7 @@ def classify(X_train, X_test, y_train, y_test, method):
         hp_dict = hyperparams
     else:
         logger.debug('Inner Loop: Randomized CV of hyperparameters for this fold')
-        clf = RandomizedSearchCV(model_clf, hyperparams, n_iter=100, scoring=scoring)
+        clf = RandomizedSearchCV(model_clf, hyperparams, n_iter=1000, scoring=scoring)
         clf.fit(X_train, y_train)
         logger.debug('Inner Loop complete, best parameters found:\n{}'.format(clf.best_estimator_.get_params()))
 
@@ -167,7 +168,7 @@ def get_states(d_rs, k=5):
     as determined by K-means clustering (ROI x STATE).
     """
     clf = KMeans(copy_x=False, n_clusters=k)
-    logger.debug('running kmeans on X ({}), k={}'.format(d_rs.shape, k))
+    logger.debug('running kmeans on X {}, k={}'.format(d_rs.shape, k))
     clf.fit(d_rs.T)
     return(clf.cluster_centers_.T)
 
