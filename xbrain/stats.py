@@ -18,10 +18,11 @@ from scipy.spatial.distance import pdist, squareform
 from sklearn.preprocessing import scale, LabelEncoder, label_binarize
 from sklearn.model_selection import RandomizedSearchCV
 from sklearn.decomposition import PCA
-from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.svm import LinearSVC
 from sklearn.ensemble import RandomForestClassifier, IsolationForest
 from sklearn.metrics import classification_report, accuracy_score, f1_score, roc_auc_score
+from sklearn.cluster import KMeans
 
 import matplotlib
 matplotlib.use('Agg')   # Force matplotlib to not use any Xwindows backend
@@ -160,11 +161,30 @@ def classify(X_train, X_test, y_train, y_test, method):
             'hp_dict':   hp_dict}
 
 
-def outlier(X_train, X_test, y_train, y_test, method):
+def get_states(d_rs, k=5):
     """
-    http://scikit-learn.org/stable/modules/outlier_detection.html
+    Accepts a ROI x TIMEPOINT dynamic connectivity matrix, and returns K states
+    as determined by K-means clustering (ROI x STATE).
     """
-    return None
+    clf = KMeans(copy_x=False, n_clusters=k)
+    logger.debug('running kmeans on X ({}), k={}'.format(d_rs.shape, k))
+    clf.fit(d_rs.T)
+    return(clf.cluster_centers_.T)
+
+
+def fit_states(d_rs, states):
+    """
+    Accepts a ROI x TIMEPOINT dynamic connectivity matrix, and a ROI x STATE
+    matrix (composed of the outputs from get_states), and computes the
+    regression coefficients for each time window against all input states.
+    Returns the sum of the coefficients across all time windows for each state.
+    Could be thought of as a measure of how much relative time this subject
+    spent in each state during the scan.
+    """
+    clf = LinearRegression()
+    clf.fit(d_rs, states)
+    return(np.sum(clf.coef_, axis=1))
+
 
 def r_to_z(R):
     """Fischer's r-to-z transform on a matrix (elementwise)."""

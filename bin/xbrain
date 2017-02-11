@@ -11,6 +11,7 @@ Arguments:
 Options:
     --xcorr=TS             A comma-seperated list of timeseries .csv (2D) predictors to use for cross-brain correlation (inter-subject).
     --connectivity=CONN    A comma-seperated list of timeseries .csv (2D) predictors to use for connectivity (intra-subject).
+    --dynamics=DYNA        A comma-seperated lisr of timeseries .csv (2D) predictors to use for dynamic connectivity (intra-subject).
     --statmaps=STATS       A comma-seperated list of statmap .nii.gz (3D) predictors.
     --predict=PREDICT      A comma-seperated list of column names in database to predict.
     --roi-mask=MASK        A ROI .nii.gz file with the same dimensions as all input statmaps and the same number of non-zero ROIs as there are unique timeseries.
@@ -123,11 +124,12 @@ def main():
     database      = arguments['<database>']
     xcorr         = arguments['--xcorr']
     connectivity  = arguments['--connectivity']
+    dynamics      = arguments['--dynamics']
     statmaps      = arguments['--statmaps']
     predict       = arguments['--predict']
     roi_mask      = arguments['--roi-mask']
     k             = int(arguments['--k'])
-    pct_variance  = float(arguments['--pct-variance'])
+    pct_variance  = arguments['--pct-variance']
     method        = arguments['--method']
     y_cutoff      = arguments['--y-cutoff']
     target_group  = arguments['--target-group']
@@ -152,9 +154,11 @@ def main():
         logger.error('method {} invalid, pick form "multiclass", "target", "ysplit", "anomoly"'.format(method))
         sys.exit(1)
 
-    if method == 'ysplit' and y_cutoff != 'auto' and not utils.is_probability(y_cutoff):
-        logger.error('ysplit: target_cutoff percentile {} invalid, should be [0-1] or "auto"'.format(y_cutoff))
-        sys.exit(1)
+    if method == 'ysplit' and y_cutoff != 'auto':
+            y_cutoff = float(y_cutoff)
+            if not utils.is_probability(y_cutoff):
+                logger.error('ysplit: target_cutoff percentile {} invalid, should be [0-1] or "auto"'.format(y_cutoff))
+                sys.exit(1)
 
     if method == 'ysplit':
         target_group = 1
@@ -184,10 +188,11 @@ def main():
     statmaps = utils.split_columns(statmaps)
     xcorr = utils.split_columns(xcorr)
     connectivity = utils.split_columns(connectivity)
+    dynamics = utils.split_columns(dynamics)
     predict = utils.split_columns(predict)
 
     columns = []
-    for variable in [statmaps, xcorr, connectivity, predict]:
+    for variable in [statmaps, xcorr, connectivity, dynamics, predict]:
         if variable:
             utils.assert_columns(db, variable)
             columns.extend(variable)
@@ -201,9 +206,11 @@ def main():
     logger.debug('generating dependent variable vector y')
     y = utils.gather_dv(db, predict)
 
+    # instead of doing any classification experiments, run diagnostics on inputs
     if diagnostics:
         stats.pre_test(db, xcorr, predict, y_cutoff, pct_variance=pct_variance)
 
+    # preprocessing of input y values (predicted values)
     if len(y.shape) == 2 and y.shape[0] > 1:
         logger.info('using PCA to reduce {} dvs in y down to 1 component'.format(y.shape[0]))
         y = stats.pca_reduce(y.T)
@@ -238,7 +245,8 @@ def main():
     acc_train, acc_test, f1_train, f1_test, auc_train, auc_test = [], [], [], [], [], []
     hp_dict = collections.defaultdict(list)
 
-    # calculate connectivity (can be outside of k-fold since no information is shared between samples)
+    # calculate static connectivity (can be outside of k-fold since no
+    # information is shared between samples)
     if connectivity:
         X_conn = corr.calc_connectivity(db, connectivity)
 
@@ -251,13 +259,15 @@ def main():
         y_train = y[train_idx]
         y_test = y[test_idx]
 
-        # calculate X_xcorr from a training sample template
+        # cross-brain correlations: calculate X_xcorr from a training sample template
         if xcorr:
             logger.debug('xcorr: calculating template 1 (group {})'.format(target_group))
+
             if method == 'anomaly':
                 template_1 = corr.find_template(db.iloc[train_idx], y_preprocessed, xcorr)
             else:
                 template_1 = corr.find_template(db.iloc[train_idx], y_preprocessed, xcorr, group=target_group)
+
             X_xcorr = corr.calc_xbrain(template_1, db, xcorr)
 
             if two_template:
@@ -267,15 +277,59 @@ def main():
                 logger.debug('xcorr: two template analysis (group {} - group {})'.format(target_group, two_template))
                 X_xcorr = X_xcorr - X2_xcorr
 
+        # dynamic functional connectivity: calculate group-wise states from training sample
+        if dynamics:
+            # first, identify states for each group
+            groups = np.unique(y_train)
+            # hard-coded: window length=16, window step size=8
+            d_rs = corr.calc_dynamic_connectivity(db, dynamics, 16, 8)
+
+            for i, group in enumerate(groups):
+                logger.debug('dynamics: calculating states for group {}'.format(group))
+
+                # sub-select the training data from this group
+                train_idx_subset = train_idx[np.where(y_train == group)[0]]
+                d_rs_group = d_rs[:, :, train_idx_subset]
+
+                # reshape to rois x windows
+                n_rois, n_windows, n_subj = d_rs_group.shape
+                d_rs_group = d_rs_group.reshape(n_rois, n_windows*n_subj)
+
+                # use k means clustering to compute centroids (rois x states)
+                group_states = stats.get_states(d_rs_group, k=5)
+
+                # combine states between groups
+                if i == 0:
+                    states = group_states
+                else:
+                    states = np.hstack((states, group_states))
+
+            # now regress each subject against the state vectors
+            for subj in np.arange(d_rs.shape[2]):
+                coeffs = stats.fit_states(d_rs[:, :, subj], states)
+                if subj == 0:
+                    X_dynamics = coeffs
+                else:
+                    X_dynamics = np.vstack((X_dynamics, coeffs))
+                    print(X_dynamics)
+
         # compose X out of the appropriate matricies
-        if xcorr and connectivity:
+        if xcorr and connectivity and dynamics:
+            X = np.hstack((X_xcorr, X_conn, X_dynamics))
+        elif xcorr and dynamics:
+            X = np.hstack((X_xcorr, X_dynamics))
+        elif connectivity and dynamics:
+            X = np.hstack((X_conn, X_dynamics))
+        elif xcorr and connectivity:
             X = np.hstack((X_xcorr, X_conn))
+        elif dynamics:
+            X = X_dynamics
         elif connectivity:
             X = X_conn
         elif xcorr:
             X = X_xcorr
         else:
-            logger.error('X not defined: no xcorr or connectivity inputs')
+            logger.error('X not defined: need xcorr, connectivity, or dynamics inputs')
             sys.exit(1)
 
         # remove nonsense values from X

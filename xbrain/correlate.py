@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 
 logger = logging.getLogger(__name__)
 
+
 def read_timeseries(db, row, col):
     """
     Return numpy array of the timeseries defined in the ith row, named column
@@ -35,6 +36,72 @@ def zscore(ts):
     means = np.tile(np.mean(ts, axis=0), [ts.shape[0], 1])
     stdev = np.tile(np.std(ts, axis=0), [ts.shape[0], 1])
     return((ts-means)/stdev)
+
+
+def dynamic_connectivity(ts, win_length, win_step):
+    """
+    Calculates dynamic (sliding window) connectivity from input timeseries data,
+    and outputs a roi x window matrix.
+    """
+    n_tr, n_vox = ts.shape
+
+    # initialize the window
+    idx_start = 0
+    idx_end = win_length-1 # correct for zero indexing
+
+    # list of tuples denoting the start and end of each window
+    windows = []
+    while idx_end <= n_tr-1:
+        windows.append((idx_start, idx_end))
+        idx_start += win_step
+        idx_end += win_step
+
+    # store the upper half of each connectivity matrix for each window
+    idx_triu = np.triu_indices(n_vox, k=1)
+    output = np.zeros((len(idx_triu[0]), len(windows)))
+
+    for i, window in enumerate(windows):
+        output[:, i] = np.corrcoef(ts[window[0]:window[1], :].T)[idx_triu]
+
+    return(output)
+
+
+def calc_dynamic_connectivity(db, connectivity, win_length, win_step):
+    """
+    Calculates within-brain dynamic connnectivity of each participant in the db.
+    The connectivity features for each subject are returns in a ROI x window
+    matrix, which are concatenated along the third dimension for each
+    participant and returned as the feature matrix X.
+    """
+    db_idx = db.index
+    n = len(db)
+    for i, column in enumerate(connectivity):
+
+        # loop through subjects
+        for j, subj in enumerate(db_idx):
+            try:
+                ts = read_timeseries(db, j, column)
+            except IOError as e:
+                logger.error(e)
+                sys.exit(1)
+
+            rs = dynamic_connectivity(ts, win_length, win_step)
+
+            # for the first timeseries, initialize the output array
+            if j == 0:
+                corrs = np.zeros((rs.shape[0], rs.shape[1], n))
+            corrs[:, :, j] = rs
+
+        # for multiple connectivity experiments, concat rs into X along second
+        # axis (X: features X timepoint X samples)
+        if i == 0:
+            X = corrs
+        else:
+            X = np.concatenate((X, corrs), axis=1)
+
+    logger.debug('correlation feature matrix shape: {}'.format(X.shape))
+
+    return X
 
 
 def calc_connectivity(db, connectivity):
