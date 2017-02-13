@@ -9,13 +9,13 @@ Arguments:
     <database>      a .csv file containing MRI data (X) and non-neural data (y)
 
 Options:
-    --xcorr=TS             A comma-seperated list of timeseries .csv (2D) predictors to use for cross-brain correlation (inter-subject).
-    --connectivity=CONN    A comma-seperated list of timeseries .csv (2D) predictors to use for connectivity (intra-subject).
-    --dynamics=DYNA        A comma-seperated lisr of timeseries .csv (2D) predictors to use for dynamic connectivity (intra-subject).
-    --statmaps=STATS       A comma-seperated list of statmap .nii.gz (3D) predictors.
-    --predict=PREDICT      A comma-seperated list of column names in database to predict.
-    --roi-mask=MASK        A ROI .nii.gz file with the same dimensions as all input statmaps and the same number of non-zero ROIs as there are unique timeseries.
-    --k=K                  Number of folds done for outer loop cross-validation [default: 10]
+    --xcorr=TS             A list of timeseries for intrasubject correlation.
+    --connectivity=CONN    A list of timeseries for static connectivity.
+    --dynamics=DYNA        A list of timeseries for dynamic connectivity.
+    --statmaps=STATS       A list of statmaps .nii.gz (3D) predictors.
+    --predict=PREDICT      A list of column names in database to predict.
+    --roi-mask=MASK        A ROI NIFTI file with the same dimensions as all input statmaps and the same number of non-zero ROIs as there are unique timeseries.
+    --k=K                  Number of cross-validation folds [default: 10]
     --pct-variance=PCTVAR  Uses PCA to compress X to retain at least this % of variance (0-1).
     --method=METHOD        One of "multiclass", "target", "ysplit", "anomaly".
     --y-cutoff=CUTOFF      Percentile cutoff to seperate the low and high y score group. Used for ysplit mode. If 'auto', uses a gaussian fit to guess what percentage of the data in y are outliers [default: 0.5]
@@ -28,9 +28,33 @@ DETAILS
 
 The xbrain analysis uses a double-cross validation approach to demonstrate
 whether the similarities in neural architecture or activity in the brain (X) is
-predictive of non-neural variables of interest (Y). For example, demographics
-(age, sex), cognitive scores (IQ, TASIT), or clinical variables (medications
+predictive of non-neural variables of interest (y). For example, demographics
+(AGE, SEX), cognitive scores (IQ, TASIT), or clinical variables (medications
 taken, number of hospital visits in the last year).
+
+** inputs **
+
+<database> is a .csv spreadsheet containing predictor values (y) and paths to
+input neuroimaging features (X). e.g.,
+
+SUBJ,  IQ,   AGE,  TS_TASK1,                TS_TASK2
+0001,  99,    24,  /path/to/0001_task1.csv, /path/to/0002_task2.csv
+0002, 103,    45,  /path/to/0002_task1.csv, /path/to/0002_task2.csv
+0003,  89,    32,  /path/to/0002_task1.csv, /path/to/0002_task2.csv
+
+For X, xbrain accepts either 2D timeseries files in .csv format, or 3D statmap
+files in NIFTI format. All inputs can be submitted at comma seperated lists of
+inputs, e.g., --xcorr='ts_task1,ts_task2', with 'ts_task1' referring to a column
+in <database>.
+
+If a 3D statmap is submitted, a ROI mask of the same dimensions must also be
+submitted, and this mask should have the same number of unique ROIs as there are
+in the submitted timeseries data. The average value will be taken from each ROI
+and added to the feature matrix X.
+
+For y, xbrain accepts either categorical or continuous data. Any column of y
+that contains more than 9 unique entries is assumed to be continuous, otherwise
+that data is treated as categorical by default.
 
 ** methods **
 
