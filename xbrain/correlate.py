@@ -6,23 +6,12 @@ import logging
 import numpy as np
 import pandas as pd
 from scipy.stats.stats import pearsonr
+from scipy.signal import medfilt
 import matplotlib
 matplotlib.use('Agg')   # Force matplotlib to not use any Xwindows backend
 import matplotlib.pyplot as plt
 
 logger = logging.getLogger(__name__)
-
-
-def read_timeseries(db, row, col):
-    """
-    Return numpy array of the timeseries defined in the ith row, named column
-    of input database db.
-    """
-    timeseries_file = db.iloc[row][col]
-    try:
-        return(np.genfromtxt(timeseries_file, delimiter=','))
-    except:
-        raise IOError('failed to parse timeseries {}'.format(timeseries_file))
 
 
 def pct_signal_change(ts):
@@ -36,40 +25,6 @@ def zscore(ts):
     means = np.tile(np.mean(ts, axis=0), [ts.shape[0], 1])
     stdev = np.tile(np.std(ts, axis=0), [ts.shape[0], 1])
     return((ts-means)/stdev)
-
-
-def dynamic_connectivity(ts, win_length, win_step):
-    """
-    Calculates dynamic (sliding window) connectivity from input timeseries data,
-    and outputs a roi x window matrix.
-    """
-    n_tr, n_vox = ts.shape
-
-    # initialize the window
-    idx_start = 0
-    idx_end = win_length # no correction: 0 indexing balances numpy ranges
-
-    # list of tuples denoting the start and end of each window
-    windows = []
-    while idx_end <= n_tr-1:
-        windows.append((idx_start, idx_end))
-        idx_start += win_step
-        idx_end += win_step
-
-    # store the upper half of each connectivity matrix for each window
-    idx_triu = np.triu_indices(n_vox, k=1)
-    output = np.zeros((len(idx_triu[0]), len(windows)))
-
-    # calculate taper (downweight early and late timepoints)
-    taper = np.atleast_2d(tukeywin(win_length)).T
-
-    for i, window in enumerate(windows):
-        # extract sample, apply taper
-        sample = ts[window[0]:window[1], :] * np.repeat(taper, n_vox, axis=1)
-        # keep upper triangle of correlation matrix
-        output[:, i] = np.corrcoef(sample.T)[idx_triu]
-
-    return(output)
 
 
 def tukeywin(win_length, alpha=0.75):
@@ -104,6 +59,71 @@ def tukeywin(win_length, alpha=0.75):
     return window
 
 
+def median_filter(ts, kernel_size=5):
+    """
+    Low-passes each time series using a n-d median filter. Useful in cases
+    where one cannot assume Gaussian noise and/or would like to preserve
+    edges within the data. We use this in fMRI to suppress the influence of
+    outliers in the data. The default kernel size (5) is conservative, and does
+    a nice job for typical fMRI run-lengths (120-200 TRs).
+    """
+    # init output array
+    filtered_ts = np.zeros(ts.shape)
+
+    # filter data per timeseries
+    for i in np.arange(ts.shape[1]):
+        filtered_ts[:, i] = medfilt(ts[:, i], kernel_size=int(kernel_size))
+
+    return filtered_ts
+
+
+def read_timeseries(db, row, col):
+    """
+    Return numpy array of the timeseries defined in the ith row, named column
+    of input database db.
+    """
+    timeseries_file = db.iloc[row][col]
+    logger.debug('reading timeseries file {}'.format(timeseries_file))
+    try:
+        return(np.genfromtxt(timeseries_file, delimiter=','))
+    except:
+        raise IOError('failed to parse timeseries {}'.format(timeseries_file))
+
+
+def dynamic_connectivity(ts, win_length, win_step):
+    """
+    Calculates dynamic (sliding window) connectivity from input timeseries data,
+    and outputs a roi x window matrix.
+    """
+    n_tr, n_vox = ts.shape
+
+    # initialize the window
+    idx_start = 0
+    idx_end = win_length # no correction: 0 indexing balances numpy ranges
+
+    # precompute the start and end of each window
+    windows = []
+    while idx_end <= n_tr-1:
+        windows.append((idx_start, idx_end))
+        idx_start += win_step
+        idx_end += win_step
+
+    # store the upper half of each connectivity matrix for each window
+    idx_triu = np.triu_indices(n_vox, k=1)
+    output = np.zeros((len(idx_triu[0]), len(windows)))
+
+    # calculate taper (downweight early and late timepoints)
+    taper = np.atleast_2d(tukeywin(win_length)).T
+
+    for i, window in enumerate(windows):
+        # extract sample, apply taper
+        sample = ts[window[0]:window[1], :] * np.repeat(taper, n_vox, axis=1)
+        # keep upper triangle of correlation matrix
+        output[:, i] = np.corrcoef(sample.T)[idx_triu]
+
+    return(output)
+
+
 def calc_dynamic_connectivity(db, connectivity, win_length, win_step):
     """
     Calculates within-brain dynamic connnectivity of each participant in the db.
@@ -123,7 +143,8 @@ def calc_dynamic_connectivity(db, connectivity, win_length, win_step):
                 logger.error(e)
                 sys.exit(1)
 
-            ts = pct_signal_change(ts)
+            ts = median_filter(ts)
+            ts = zscore(ts)
             rs = dynamic_connectivity(ts, win_length, win_step)
 
             # for the first timeseries, initialize the output array
@@ -161,6 +182,8 @@ def calc_connectivity(db, connectivity):
                 logger.error(e)
                 sys.exit(1)
 
+            ts = median_filter(ts)
+            ts = zscore(ts)
             idx = np.triu_indices(ts.shape[1], k=1)
             rs = np.corrcoef(ts.T)[idx]
 

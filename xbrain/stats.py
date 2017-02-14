@@ -21,7 +21,7 @@ from sklearn.decomposition import PCA
 from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.svm import LinearSVC
 from sklearn.ensemble import RandomForestClassifier, IsolationForest
-from sklearn.metrics import classification_report, accuracy_score, f1_score, roc_auc_score
+from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, f1_score, roc_auc_score
 from sklearn.cluster import KMeans
 
 import matplotlib
@@ -144,8 +144,8 @@ def classify(X_train, X_test, y_train, y_test, method):
     # allows you to alter the call to precision_score. Perhaps a bug should be filed.
     logger.debug('train data performance:\n{}'.format(classification_report(y_train, clf.predict(X_train))))
     logger.debug('test data performance:\n{}'.format(classification_report(y_test, clf.predict(X_test))))
-    logger.debug('TRAIN: predicted,actual values\n{}\n{}'.format(X_train_pred, y_train))
-    logger.debug('TEST:  predicted,actual values\n{}\n{}'.format(X_test_pred, y_test))
+    logger.debug('TRAIN: confusion matrix\n{}'.format(confusion_matrix(y_train, X_train_pred)))
+    logger.debug('TEST:  confusion matrix\n{}'.format(confusion_matrix(y_test, X_test_pred)))
 
     # check feature importance (QC for HC importance)
     # for fid in np.arange(10):
