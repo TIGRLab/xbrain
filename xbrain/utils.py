@@ -121,21 +121,18 @@ def scrub_data(x):
     return x
 
 
-def gather_dv(db, columns):
+def gather_columns(db, columns):
     """
-    Returns a numpy vector of the predicted column. Cutoff is a percentage
-    (0 < p < 0.5). If cutoff specified, returns a binary vector (0 = lower than
-    cutoff, 1 = higher than cutoff). The maximum cutoff is 50%, or the median
-    of the sample.
+    Returns a numpy matrix of the specified columns.
     """
     for i, col in enumerate(columns):
         tmp = np.array(db[col])
         if i == 0:
-            y = tmp
+            X = tmp
         else:
-            y = np.vstack((y, tmp))
+            X = np.vstack((X, tmp))
 
-    return(y)
+    return(X.T)
 
 
 def make_dv_groups(y, cutoff):

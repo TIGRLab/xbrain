@@ -17,6 +17,7 @@ echo 'multiclass diagnosis prediction using resting state, CMH, 80% PCA variance
     --method='target' \
     --target-group=1 \
     --debug \
+    --output='output/rest-diagnose' \
     /projects/jviviano/data/xbrain/assets/database_xbrain_CMH.csv
 
 #echo 'ysplit social cognitive predicition (bottom 30% vs top 70%) using resting state and xbrain correlations (IM/OB), all sites, 50% PCA variance retained'

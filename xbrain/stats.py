@@ -21,7 +21,7 @@ from sklearn.decomposition import PCA
 from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.svm import LinearSVC
 from sklearn.ensemble import RandomForestClassifier, IsolationForest
-from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, f1_score, roc_auc_score
+from sklearn.metrics import confusion_matrix, accuracy_score, recall_score, precision_score, f1_score, roc_auc_score
 from sklearn.cluster import KMeans
 
 import matplotlib
@@ -123,27 +123,17 @@ def classify(X_train, X_test, y_train, y_test, method):
         X_test_pred[X_test_pred == -1] = 0
 
     # collect performance metrics
-    acc_train = accuracy_score(y_train, X_train_pred)
-    acc_test = accuracy_score(y_test, X_test_pred)
+    acc = (accuracy_score(y_train, X_train_pred), accuracy_score(y_test, X_test_pred))
+    rec = (recall_score(y_train, X_train_pred), recall_score(y_test, X_test_pred))
+    prec = (precision_score(y_train, X_train_pred), precision_score(y_test, X_test_pred))
 
     if method == 'multiclass':
-        f1_train = f1_score(y_train, X_train_pred, average='weighted')
-        f1_test = f1_score(y_test, X_test_pred, average='weighted')
-        auc_train = 0
-        auc_test = 0
+        f1 = (f1_score(y_train, X_train_pred, average='weighted'), f1_score(y_test, X_test_pred, average='weighted'))
+        auc = (0, 0)
     else:
-        f1_train = f1_score(y_train, X_train_pred)
-        f1_test = f1_score(y_test, X_test_pred)
-        auc_train = roc_auc_score(y_train, X_train_pred)
-        auc_test = roc_auc_score(y_test, X_test_pred)
+        f1 = (f1_score(y_train, X_train_pred), f1_score(y_test, X_test_pred))
+        auc = (roc_auc_score(y_train, X_train_pred), roc_auc_score(y_test, X_test_pred))
 
-    #if method == 'target' or method == 'ysplit':
-    # throws an error in the multiclass case:
-    # "Target is multiclass but average='binary'. Please choose another average setting."
-    # Related to sklearn.metrics.precision_score, but unsure if classification_report
-    # allows you to alter the call to precision_score. Perhaps a bug should be filed.
-    logger.debug('train data performance:\n{}'.format(classification_report(y_train, clf.predict(X_train))))
-    logger.debug('test data performance:\n{}'.format(classification_report(y_test, clf.predict(X_test))))
     logger.debug('TRAIN: confusion matrix\n{}'.format(confusion_matrix(y_train, X_train_pred)))
     logger.debug('TEST:  confusion matrix\n{}'.format(confusion_matrix(y_test, X_test_pred)))
 
@@ -153,13 +143,12 @@ def classify(X_train, X_test, y_train, y_test, method):
     #     feat_imp = model_clf.feature_importances_
     #     print('\nfid: {} r: {}'.format(fid, zip(*CV_r_valid)[0][fid]))
     #     print(feat_imp[70:], np.argsort(feat_imp)[70:])
-    return {'acc_train': acc_train,
-            'acc_test':  acc_test,
-            'f1_train':  f1_train,
-            'f1_test':   f1_test,
-            'auc_train': auc_train,
-            'auc_test':  auc_test,
-            'hp_dict':   hp_dict}
+    return {'accuracy': acc,
+            'recall' : rec,
+            'precision': prec,
+            'f1': f1,
+            'auc': auc,
+            'hp_dict': hp_dict}
 
 
 def get_states(d_rs, k=5):

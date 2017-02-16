@@ -13,6 +13,7 @@ Options:
     --connectivity=CONN    A list of timeseries for static connectivity.
     --dynamics=DYNA        A list of timeseries for dynamic connectivity.
     --statmaps=STATS       A list of statmaps .nii.gz (3D) predictors.
+    --raw=RAW              A list of column names in database as predictors.
     --predict=PREDICT      A list of column names in database to predict.
     --roi-mask=MASK        A ROI NIFTI file.
     --k=K                  Number of cross-validation folds [default: 10]
@@ -21,6 +22,7 @@ Options:
     --y-cutoff=CUTOFF      % cutoff to find low and high y group. [default: 0.5]
     --target-group=GROUP1  Draw the xbrain template from this group.
     --two-template=GROUP2  If defined, X is are the difference between target-group and this group.
+    --output=OUTPUT        A directory to place outputs.
     --diagnostics          Run diagnostics on input data.
     --debug                Verbose outputs.
 
@@ -42,10 +44,11 @@ SUBJ,  IQ,   AGE,  TS_TASK1,                TS_TASK2
 0002, 103,    45,  /path/to/0002_task1.csv, /path/to/0002_task2.csv
 0003,  89,    32,  /path/to/0002_task1.csv, /path/to/0002_task2.csv
 
-For X, xbrain accepts either 2D timeseries files in .csv format, or 3D statmap
-files in NIFTI format. All inputs can be submitted at comma seperated lists of
-inputs, e.g., --xcorr='ts_task1,ts_task2', with 'ts_task1' referring to a column
-in <database>.
+For X, xbrain accepts either 2D timeseries files in .csv format, 3D statmap
+files in NIFTI format, raw databse entries (defined on a column wise basis), or
+some combination of the above. All inputs can be submitted at comma seperated
+lists of inputs, e.g., --xcorr='ts_task1,ts_task2', with 'ts_task1' referring to
+a column in <database>.
 
 If a 3D statmap is submitted, a ROI mask of the same dimensions must also be
 submitted, and this mask should have the same number of unique ROIs as there are
@@ -124,6 +127,7 @@ xbrain -h or --help prints this message.
 """
 
 import sys, os
+import shutil
 import collections
 import logging
 import random
@@ -142,7 +146,14 @@ import xbrain.stats as stats
 logging.basicConfig(level=logging.WARN, format="[%(name)s] %(levelname)s: %(message)s")
 logger = logging.getLogger(os.path.basename(__file__))
 
-HOME = os.path.expanduser('~')
+
+def parse_results(results):
+    """Parses results vector and returns mean & sem for test & train"""
+    train_mean = np.mean([i[0] for i in results])
+    test_mean = np.mean([i[1] for i in results])
+    train_sem = sem([i[0] for i in results])
+    test_sem = sem([i[1] for i in results])
+    return(train_mean, test_mean, train_sem, test_sem)
 
 
 def main():
@@ -152,6 +163,7 @@ def main():
     connectivity  = arguments['--connectivity']
     dynamics      = arguments['--dynamics']
     statmaps      = arguments['--statmaps']
+    raw           = arguments['--raw']
     predict       = arguments['--predict']
     roi_mask      = arguments['--roi-mask']
     k             = int(arguments['--k'])
@@ -162,101 +174,140 @@ def main():
     two_template  = arguments['--two-template']
     diagnostics   = arguments['--diagnostics']
     debug         = arguments['--debug']
+    output        = arguments['--output']
 
-    global HOME
-
+    # logging: debug?
     logger.info('starting')
     if debug:
         logger.setLevel(logging.DEBUG)
 
-    # check and format inputs
+    # database: valid csv?
     try:
         db = pd.read_csv(database)
     except:
         logger.error('failed to parse input .csv database {}',format(database))
         sys.exit(1)
 
-    if method not in ['multiclass', 'target', 'ysplit', 'anomaly']:
-        logger.error('method {} invalid, pick form "multiclass", "target", "ysplit", "anomoly"'.format(method))
-        sys.exit(1)
-
-    if method == 'ysplit' and y_cutoff != 'auto':
-            y_cutoff = float(y_cutoff)
-            if not utils.is_probability(y_cutoff):
-                logger.error('ysplit: target_cutoff percentile {} invalid, should be [0-1] or "auto"'.format(y_cutoff))
+    # output: make directory
+    if output:
+        if not os.path.exists(output):
+            try:
+                os.makedirs(output)
+            except:
+                logger.error('failed to create output directory {}'.format(output))
                 sys.exit(1)
+    else:
+        output = os.path.expanduser('~')
 
+    # backup input database
+    shutil.copyfile(database, os.path.join(output, 'xbrain_database.csv'))
+
+    # open information file
+    csv_info = open(os.path.join(output, 'xbrain_information.csv'), 'wb')
+    csv_info.writelines('xbrain run with the following inputs\n  statmaps={}\n  xcorr={}\n  connectivity={}\n  dynamics={}\n  raw={}\n  predict={}\n'.format(
+                         statmaps, xcorr, connectivity, dynamics, raw, predict))
+
+    # gather and reduce database to specified columns
+    statmaps = utils.split_columns(statmaps)
+    xcorr = utils.split_columns(xcorr)
+    connectivity = utils.split_columns(connectivity)
+    dynamics = utils.split_columns(dynamics)
+    raw = utils.split_columns(raw)
+    predict = utils.split_columns(predict)
+
+    columns = []
+    for variable in [statmaps, xcorr, connectivity, dynamics, raw, predict]:
+        if variable:
+            utils.assert_columns(db, variable)
+            columns.extend(variable)
+    columns = list(set(columns))
+    db = db[columns]
+    n_pre = len(db)
+    db = db.dropna(axis=0)
+    logger.debug('database cols: {}, rows: {}/{}'.format(columns, len(db), n_pre))
+    csv_info.writelines('options:\n  n={}\n  k={}\n'.format(len(db), k))
+
+    logger.debug('generating dependent variable vector y')
+    y = utils.gather_columns(db, predict)
+
+    # method: valid?
+    if method not in ['multiclass', 'target', 'ysplit', 'anomaly']:
+        logger.error('method {} invalid, pick form "multiclass", "target", "ysplit", "anomaly"'.format(method))
+        sys.exit(1)
+    csv_info.writelines('  method={}\n'.format(method))
+
+    # y_cutoff: percentile?
+    if method == 'ysplit' and y_cutoff != 'auto':
+        y_cutoff = float(y_cutoff)
+        if not utils.is_probability(y_cutoff):
+            logger.error('ysplit: target_cutoff percentile {} invalid, should be [0-1] or "auto"'.format(y_cutoff))
+            sys.exit(1)
+        csv_info.writelines('  y-cutoff={}\n'.format(y_cutoff))
+
+    # target_group: valid?
     if method == 'ysplit':
         target_group = 1
-
     if method == 'multiclass' or method == 'target':
         if target_group:
             target_group = int(target_group)
         elif xcorr:
             logger.error('target_group must be defined for "multiclass" and "target" modes when calculating xcorr')
             sys.exit(1)
+    if target_group:
+        csv_info.writelines('  target-group={}\n'.format(target_group))
 
+    # two_template: valid?
     if method == 'anomaly' and two_template:
         logger.warning('anomaly mode does not allow for two template analysis, ignoring')
         two_template = None
-
-    if pct_variance:
-        pct_variance = float(pct_variance)
-        if not utils.is_probability(pct_variance):
-            logger.error('pct variance retained {} invalid, should be (0-1)'.format(pct_variance))
-
     if two_template:
         two_template = int(two_template)
         if two_template == target_group:
             logger.error('two_template group {} should be different than the target group {}'.format(two_template, target_group))
             sys.exit(1)
+        csv_info.writelines('  target-group={}\n'.format(target_group))
 
-    # gather and reduce to defined database columns
-    statmaps = utils.split_columns(statmaps)
-    xcorr = utils.split_columns(xcorr)
-    connectivity = utils.split_columns(connectivity)
-    dynamics = utils.split_columns(dynamics)
-    predict = utils.split_columns(predict)
+    # pct_variance: valid?
+    if pct_variance:
+        pct_variance = float(pct_variance)
+        if not utils.is_probability(pct_variance):
+            logger.error('pct variance retained {} invalid, should be (0-1)'.format(pct_variance))
+        csv_info.writelines('  pct-variance={}\n'.format(pct_variance))
 
-    columns = []
-    for variable in [statmaps, xcorr, connectivity, dynamics, predict]:
-        if variable:
-            utils.assert_columns(db, variable)
-            columns.extend(variable)
+    csv_info.close()
 
-    columns = list(set(columns))
-    db = db[columns]
-    n_pre = len(db)
-    db = db.dropna(axis=0)
-    logger.debug('database cols: {}, rows: {}/{}'.format(columns, len(db), n_pre))
-
-    logger.debug('generating dependent variable vector y')
-    y = utils.gather_dv(db, predict)
-
-    # instead of doing any classification experiments, run diagnostics on inputs
     if diagnostics:
+        # run diagnostics on inputs, no classification (NB: broken)
         stats.pre_test(db, xcorr, predict, y_cutoff, pct_variance=pct_variance)
 
-    # preprocessing of input y values (predicted values)
-    if len(y.shape) == 2 and y.shape[0] > 1:
+    # preprocess y in prep for classification experiments
+    if len(y.shape) == 2 and y.shape[1] > 1:
+        # compress y to 1d vector, if required (predicted_values)
         logger.info('using PCA to reduce {} dvs in y down to 1 component'.format(y.shape[0]))
-        y = stats.pca_reduce(y.T)
+        y = stats.pca_reduce(y)
 
     if method == 'target':
+        # set y values of the target group to 1, and the rest to 0
         y_tmp = np.zeros(y.shape)
-        y_tmp[y == target_group] = 0
-        y_tmp[y != target_group] = 1
+        y_tmp[y == target_group] = 1
+        y_tmp[y != target_group] = 0
         y = y_tmp
 
     if method == 'ysplit':
         if y_cutoff == 'auto':
+            # automatically determine values that fall outside of the normal
+            # range by fitting a gaussian to y and looking for extreme values
             y = stats.find_outliers(y)
         else:
+            # split y at a pre-defined percentile
             y = utils.make_dv_groups(y, y_cutoff)
 
     if method == 'anomaly':
+        # automatically determine values that fall outside of the normal
+        # range by fitting a gaussian to y and looking for extreme values
         y = stats.find_outliers(y)
     else:
+        # split y at a pre-defined percentile
         y = stats.make_classes(y)
 
     # add a column with the preprocessed y groups
@@ -274,43 +325,55 @@ def main():
                 logger.error('two template group {} not in y: {}'.format(two_template, np.unique(y)))
                 sys.exit(1)
 
-    # stores outputs across folds
-    acc_train, acc_test, f1_train, f1_test, auc_train, auc_test = [], [], [], [], [], []
+    # stores outputs
+    # list of tuples [(train1, test1), (train2, test2), ... (trainN, testN)]
+    acc, rec, prec, f1, auc = [], [], [], [], []
+    # dict of lists containing the best hyperparameter found for each fold
     hp_dict = collections.defaultdict(list)
+    # text files for results
+    csv_results = open(os.path.join(output, 'xbrain_results.csv'), 'wb')
+    csv_results.writelines('k,accuracy_train,accuracy_test,recall_train,recall_test,precision_train,precision_test,f1_train,f1_test,auc_train,auc_test\n')
+    csv_hyper = open(os.path.join(output, 'xbrain_hyperparameters.csv'), 'wb')
 
-    # calculate static connectivity (can be outside of k-fold since no
-    # information is shared between samples)
+    # static connectivity: outside k-fold b/c no info shared between samples
     if connectivity:
         X_conn = corr.calc_connectivity(db, connectivity)
+
+    # raw data: simply append columns to X
+    if raw:
+        X_raw = utils.gather_columns(db, raw)
 
     # stratified k-fold cross validation: split into train and test sets
     logger.info('Outer Loop: {} fold cross validation'.format(k))
     kf = StratifiedKFold(n_splits=k, shuffle=True)
+    count = 1
     for train_idx, test_idx in kf.split(np.zeros(len(y)), y):
 
         # split the outcome variables into train and test groups
         y_train = y[train_idx]
         y_test = y[test_idx]
 
-        # cross-brain correlations: calculate X_xcorr from a training sample template
+        # cross-brain correlations: calculate X_xcorr from a training templates
         if xcorr:
-            logger.debug('xcorr: calculating template 1 (group {})'.format(target_group))
 
+            logger.debug('xcorr: calculating template 1 (group {})'.format(target_group))
             if method == 'anomaly':
+                # anomaly mode: use all subjects from training data to create X
                 template_1 = corr.find_template(db.iloc[train_idx], y_preprocessed, xcorr)
             else:
+                # use subjects from the target group to create X
                 template_1 = corr.find_template(db.iloc[train_idx], y_preprocessed, xcorr, group=target_group)
-
             X_xcorr = corr.calc_xbrain(template_1, db, xcorr)
 
             if two_template:
+                # create a second X from the second target group defined
                 logger.debug('xcorr: calculating template 2 (group {})'.format(two_template))
                 template_2 = corr.find_template(db.iloc[train_idx], y_preprocessed, xcorr, group=two_template)
                 X2_xcorr = corr.calc_xbrain(template_2, db, xcorr)
-                logger.debug('xcorr: two template analysis (group {} - group {})'.format(target_group, two_template))
+                logger.info('xcorr: two template analysis (group {} - group {})'.format(target_group, two_template))
                 X_xcorr = X_xcorr - X2_xcorr
 
-        # dynamic functional connectivity: calculate group-wise states from training sample
+        # dynamic connectivity: calculate group-wise states from training data
         if dynamics:
             # first, identify states for each group win_len=30, win_step=2
             d_rs = corr.calc_dynamic_connectivity(db, dynamics, 30, 2)
@@ -345,25 +408,17 @@ def main():
                     X_dynamics = np.vstack((X_dynamics, coeffs))
 
         # compose X out of the appropriate matricies
-        if xcorr and connectivity and dynamics:
-            X = np.hstack((X_xcorr, X_conn, X_dynamics))
-        elif xcorr and dynamics:
-            X = np.hstack((X_xcorr, X_dynamics))
-        elif connectivity and dynamics:
-            X = np.hstack((X_conn, X_dynamics))
-        elif xcorr and connectivity:
-            X = np.hstack((X_xcorr, X_conn))
-        elif dynamics:
-            X = X_dynamics
-        elif connectivity:
-            X = X_conn
-        elif xcorr:
-            X = X_xcorr
-        else:
-            logger.error('X not defined: need xcorr, connectivity, or dynamics inputs')
+        for features in ['X_xcorr', 'X_conn', 'X_dynamics', 'X_raw']:
+            if features in vars():
+                if 'X' in vars():
+                    X = np.hstack((X, eval(features)))
+                else:
+                    X = eval(features)
+        try:
+            logger.info('X features size {}'.format(X.shape))
+        except:
+            logger.error('X not defined: no suitable predictors specified')
             sys.exit(1)
-
-        logger.info('X features size {}'.format(X.shape))
 
         # remove nonsense values from X
         X = utils.clean(X)
@@ -377,7 +432,7 @@ def main():
             X_train, X_test = stats.pca_reduce(X_train, n=X_train.shape[0],
                                                     pct=pct_variance, X2=X_test)
 
-        corr.plot_X(X_train, HOME, title='test-vs-train', X2=X_test)
+        corr.plot_X(X_train, output, title='test-vs-train', X2=X_test)
 
         try:
             results = stats.classify(X_train, X_test, y_train, y_test, method)
@@ -386,19 +441,28 @@ def main():
             sys.exit(1)
 
         # append the results of each fold
-        acc_train.append(results['acc_train'])
-        acc_test.append(results['acc_test'])
-        f1_train.append(results['f1_train'])
-        f1_test.append(results['f1_test'])
-        auc_train.append(results['auc_train'])
-        auc_test.append(results['auc_test'])
+        acc.append(results['accuracy'])
+        rec.append(results['recall'])
+        prec.append(results['precision'])
+        f1.append(results['f1'])
+        auc.append(results['auc'])
+
+        csv_results.writelines('{},{},{},{},{},{},{},{},{},{},{}\n'.format(
+                                count,
+                                results['accuracy'][0],results['accuracy'][1],
+                                results['recall'][0], results['recall'][1],
+                                results['precision'][0], results['precision'][1],
+                                results['f1'][0], results['f1'][1],
+                                results['auc'][0], results['auc'][1]))
+        count += 1
 
         # collects the relevant hyperparameters for the chosen model
         hp_tmp = results['hp_dict']
         for hp in hp_tmp.keys():
             hp_dict[hp].append(hp_tmp[hp])
+        csv_hyper.writelines(hp_dict)
 
-    # find out most frequent hyperparameters during cross-val
+    # hyperparameters found during inner loop cross validation
     hp_final = {}
     for hp in hp_dict.keys():
         if isinstance(hp_dict[hp][0][0], basestring):
@@ -407,13 +471,36 @@ def main():
         else:
             # continuous / integet hyperparameters, take median
             hp_final[hp] = np.median(hp_dict[hp][0])
-    logger.debug('final hyperparameters:\n{}'.format(hp_final))
+    logger.info('final hyperparameters:\n{}'.format(hp_final))
+    csv_hyper.writelines(hp_final)
+    csv_hyper.close()
 
     # final results
+    acc_train_mean, acc_test_mean, acc_train_sem, acc_test_sem = parse_results(acc)
+    rec_train_mean, rec_test_mean, rec_train_sem, rec_test_sem = parse_results(rec)
+    prec_train_mean, prec_test_mean, prec_train_sem, prec_test_sem = parse_results(prec)
+    f1_train_mean, f1_test_mean, f1_train_sem, f1_test_sem = parse_results(f1)
+    auc_train_mean, auc_test_mean, auc_train_sem, auc_test_sem = parse_results(auc)
+
+    csv_results.writelines('mean,{},{},{},{},{},{},{},{},{},{}\n'.format(
+                            acc_train_mean, acc_test_mean,
+                            rec_train_mean, rec_test_mean,
+                            prec_train_mean, prec_test_mean,
+                            f1_train_mean, f1_test_mean,
+                            auc_train_mean, auc_test_mean))
+
+    csv_results.writelines('sem,{},{},{},{},{},{},{},{},{},{}'.format(
+                            acc_train_sem, acc_test_sem,
+                            rec_train_sem, rec_test_sem,
+                            prec_train_sem, prec_test_sem,
+                            f1_train_sem, f1_test_sem,
+                            auc_train_sem, auc_test_sem))
+    csv_results.close()
+
     logger.info('train results:\n  acc={}+/-{}\n  f1={}+/-{}\n  auc={}+/-{}'.format(
-             np.mean(acc_train), sem(acc_train), np.mean(f1_train), sem(f1_train), np.mean(auc_train), sem(auc_train)))
+             acc_train_mean, acc_train_sem, f1_train_mean, f1_train_sem, auc_train_mean, auc_train_sem))
     logger.info('test results:\n  acc={}+/-{}\n  f1={}+/-{}\n  auc={}+/-{}'.format(
-             np.mean(acc_test), sem(acc_test), np.mean(f1_test), sem(f1_test), np.mean(auc_test), sem(auc_test)))
+             acc_test_mean, acc_test_sem, f1_test_mean, f1_test_sem, auc_test_mean, auc_test_sem))
 
 if __name__ == '__main__':
     main()
