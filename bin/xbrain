@@ -185,7 +185,7 @@ def main():
     try:
         db = pd.read_csv(database)
     except:
-        logger.error('failed to parse input .csv database {}',format(database))
+        logger.error('failed to parse input .csv database {}'.format(database))
         sys.exit(1)
 
     # output: make directory
@@ -286,13 +286,6 @@ def main():
         logger.info('using PCA to reduce {} dvs in y down to 1 component'.format(y.shape[0]))
         y = stats.pca_reduce(y)
 
-    if method == 'target':
-        # set y values of the target group to 1, and the rest to 0
-        y_tmp = np.zeros(y.shape)
-        y_tmp[y == target_group] = 1
-        y_tmp[y != target_group] = 0
-        y = y_tmp
-
     if method == 'ysplit':
         if y_cutoff == 'auto':
             # automatically determine values that fall outside of the normal
@@ -309,6 +302,18 @@ def main():
     else:
         # split y at a pre-defined percentile
         y = stats.make_classes(y)
+
+    if target_group:
+        if target_group not in y:
+            logger.error('target_group {} not in y: valid={}'.format(target_group, np.unique(y)))
+            sys.exit(1)
+
+    if method == 'target':
+        # set y values of the target group to 1, and the rest to 0
+        y_tmp = np.zeros(y.shape)
+        y_tmp[y == target_group] = 1
+        y_tmp[y != target_group] = 0
+        y = y_tmp
 
     # add a column with the preprocessed y groups
     y_preprocessed = ''.join(random.choice(string.ascii_uppercase) for _ in range(10))
@@ -408,6 +413,11 @@ def main():
                     X_dynamics = np.vstack((X_dynamics, coeffs))
 
         # compose X out of the appropriate matricies
+        try:
+            del X # resets X for each fold
+        except:
+            pass
+
         for features in ['X_xcorr', 'X_conn', 'X_dynamics', 'X_raw']:
             if features in vars():
                 if 'X' in vars():

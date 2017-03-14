@@ -16,14 +16,14 @@ logger = logging.getLogger(__name__)
 
 def pct_signal_change(ts):
     """Converts each timeseries (column of matrix ts) to % signal change."""
-    means = np.tile(np.mean(ts, axis=0), [ts.shape[0], 1])
+    means = np.tile(np.mean(ts, axis=1).T, [ts.shape[1], 1]).T
     return(((ts-means)/means) * 100)
 
 
 def zscore(ts):
     """Converts each timeseries to have 0 mean and unit variance."""
-    means = np.tile(np.mean(ts, axis=0), [ts.shape[0], 1])
-    stdev = np.tile(np.std(ts, axis=0), [ts.shape[0], 1])
+    means = np.tile(np.mean(ts, axis=1).T, [ts.shape[1], 1]).T
+    stdev = np.tile(np.std(ts, axis=1).T, [ts.shape[1], 1]).T
     return((ts-means)/stdev)
 
 
@@ -71,8 +71,8 @@ def median_filter(ts, kernel_size=5):
     filtered_ts = np.zeros(ts.shape)
 
     # filter data per timeseries
-    for i in np.arange(ts.shape[1]):
-        filtered_ts[:, i] = medfilt(ts[:, i], kernel_size=int(kernel_size))
+    for i in np.arange(ts.shape[0]):
+        filtered_ts[i, :] = medfilt(ts[i, :], kernel_size=int(kernel_size))
 
     return filtered_ts
 
@@ -95,7 +95,7 @@ def dynamic_connectivity(ts, win_length, win_step):
     Calculates dynamic (sliding window) connectivity from input timeseries data,
     and outputs a roi x window matrix.
     """
-    n_tr, n_vox = ts.shape
+    n_vox, n_tr = ts.shape
 
     # initialize the window
     idx_start = 0
@@ -113,13 +113,15 @@ def dynamic_connectivity(ts, win_length, win_step):
     output = np.zeros((len(idx_triu[0]), len(windows)))
 
     # calculate taper (downweight early and late timepoints)
-    taper = np.atleast_2d(tukeywin(win_length)).T
+    taper = np.atleast_2d(tukeywin(win_length))
 
     for i, window in enumerate(windows):
         # extract sample, apply taper
-        sample = ts[window[0]:window[1], :] * np.repeat(taper, n_vox, axis=1)
+        sample = ts[:, window[0]:window[1]] * np.repeat(taper, n_vox, axis=0)
+
         # keep upper triangle of correlation matrix
-        output[:, i] = np.corrcoef(sample.T)[idx_triu]
+        test = np.corrcoef(sample)
+        output[:, i] = np.corrcoef(sample)[idx_triu]
 
     return(output)
 
@@ -143,11 +145,13 @@ def calc_dynamic_connectivity(db, connectivity, win_length, win_step):
                 logger.error(e)
                 sys.exit(1)
 
-            ts = median_filter(ts)
+            #ts = median_filter(ts)
+            logger.debug('timeseries data: n_rois={}, n_timepoints={}'.format(ts.shape[0], ts.shape[1]))
             ts = zscore(ts)
             rs = dynamic_connectivity(ts, win_length, win_step)
 
             # for the first timeseries, initialize the output array
+            logger.debug('{} windows extracted'.format(rs.shape[1]))
             if j == 0:
                 corrs = np.zeros((rs.shape[0], rs.shape[1], n))
             corrs[:, :, j] = rs
@@ -182,10 +186,11 @@ def calc_connectivity(db, connectivity):
                 logger.error(e)
                 sys.exit(1)
 
-            ts = median_filter(ts)
+            #ts = median_filter(ts)
+            logger.debug('timeseries data: n_rois={}, n_timepoints={}'.format(ts.shape[0], ts.shape[1]))
             ts = zscore(ts)
-            idx = np.triu_indices(ts.shape[1], k=1)
-            rs = np.corrcoef(ts.T)[idx]
+            idx = np.triu_indices(ts.shape[0], k=1)
+            rs = np.corrcoef(ts)[idx]
 
             # for the first timeseries, initialize the output array
             if j == 0:
@@ -225,7 +230,7 @@ def calc_xbrain(template_db, db, timeseries):
         for j, subj in enumerate(db_idx):
             if j == 0:
                 # for the first timeseries, initialize the output array
-                xcorrs = np.zeros((n, template_ts.shape[1]))
+                xcorrs = np.zeros((n, template_ts.shape[0]))
 
             try:
                 ts = read_timeseries(db, j, column)
@@ -233,8 +238,9 @@ def calc_xbrain(template_db, db, timeseries):
                 logger.error(e)
                 sys.exit(1)
 
+            logger.debug('timeseries data: n_rois={}, n_timepoints={}'.format(ts.shape[0], ts.shape[1]))
             ts = zscore(ts)
-            n_roi = ts.shape[1]
+            n_roi = ts.shape[0]
 
             # take the mean of the template, excluding this sample if shared
             unique_idx = template_idx != subj
@@ -243,7 +249,7 @@ def calc_xbrain(template_db, db, timeseries):
             # diag of the intersubject corrs (upper right corner of matrix),
             # this includes only the correlations between homologous regions
             try:
-                rs = np.diag(np.corrcoef(ts.T, y=template_mean.T)[n_roi:, :n_roi])
+                rs = np.diag(np.corrcoef(ts, y=template_mean)[n_roi:, :n_roi])
             except:
                 raise Exception('xcorr dimension missmatch: subject {} dims={}, timeseries={}, template dims={}'.format(j, ts.shape, column, template_mean.shape))
 
@@ -275,7 +281,7 @@ def get_column_ts(df, column):
     # collect timeseries
     for i in range(n):
         ts = read_timeseries(df, i, column)
-        ts = pct_signal_change(ts)
+        ts = zscore(ts)
         try:
             template_ts[:, :, i] = ts
         except:
