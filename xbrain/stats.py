@@ -11,7 +11,7 @@ import string
 import numpy as np
 from scipy import linalg
 from scipy.optimize import curve_fit
-from scipy.stats import lognorm, randint, uniform, mode
+from scipy.stats import lognorm, randint, uniform, mode, spearmanr
 import scipy.cluster.hierarchy as sch
 from scipy.spatial.distance import pdist, squareform
 
@@ -32,6 +32,7 @@ import seaborn as sns
 
 import xbrain.correlate as corr
 import xbrain.utils as utils
+import xbrain.rcca as rcca
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +150,87 @@ def classify(X_train, X_test, y_train, y_test, method):
             'f1': f1,
             'auc': auc,
             'hp_dict': hp_dict}
+
+def biotype(X_train, X_test, y_train, n=0):
+    """
+    X is a ROI x SUBJECT matrix of features (connectivities, cross-brain
+    correlations, etc.), and y N by SUBJECT matrix of outcome measures (i.e.,
+    cognitive variables, demographics, etc.).
+
+    If n is greater than 0, this will find exactly the number of cannonical
+    variates defined. Otherwise, it will use cross validation to estimate the
+    number of variates.
+
+    Typically, you want to estimate the number of variates before training your
+    classification model, and then try to find the same number of variates for
+    each fold.
+
+    The output of this analysis is a cluster membership per subject. The optimal
+    number of clusters is determined via a split-half resampling method (ref).
+
+    The pipeline is as follows:
+
+    1) Find features in X_train have a significant spearman's rank correlation
+       with at least 1 of the variables in y_test (uncorrected p < 0.005).
+    2) Carry these reduced feature sets forward as X_train_red, X_test_red.
+    2) Use connonical correlation to find a low-dimensional mapping between
+       the reduced feature matrix X_train_red and y_train.
+    3) Cluster the subjects using Ward's hierarchical clustering into biotypes,
+       generating biotype labels (the new y_train).
+    4) Train a linear discriminate classifier on X_train_red and the cluster
+       labels, and then run this model on X_test, to produce biotype labels for
+       the test set (the new y_test).
+
+    This returns y_train and y_test, the discovered biotypes for classification.
+    """
+    logger.debug('testing {} X verticies against {} y variables'.format(X_train.shape[1], y_train.shape[1]))
+    idx = np.zeros(X_train.shape[1], dtype=bool)
+
+    # in a for loop due to the immense size of (X.shape[1]+y.shape[1])^2
+    # should implement chunking to speed this up
+    for vertex in range(X_train.shape[1]):
+        # takes the p values of the rs between the variation in connectivity in
+        # a single vertex, and all predictors of interest
+        p_vals = spearmanr(X_train[:, vertex], y_train)[1][1:, 0]
+
+        # if connection is significantly related to any y variable, flag
+        if sum(p_vals <= 0.005) > 0:
+            idx[vertex] = np.bool(1)
+
+    # reduce X_train, X_test
+    logger.debug('{} verticies significantly related to at least one variable in y'.format(sum(idx)))
+    X_train_red = X_train[:, idx]
+    X_test_red = X_test[:, idx]
+
+    # use regularized CCA to determine the optimal number of cannonical variates
+    logger.debug('running cannonical correlation analysis to find brain-behaviour mappings')
+    regs = np.array(np.logspace(-4, 2, 10)) # regularization b/t 1e-4 and 1e2
+
+    # estimate number of CCs
+    if n <= 0:
+        numCCs = np.arange(2, 11)
+    else:
+        numCCs = n
+
+    cca = rcca.CCACrossValidate(numCCs=numCCs, regs=regs)
+
+    # split data in half (train and test) no need to shuffle as data is already
+    # shuffled by the kfold call
+    n_samples = X_train_red.shape[0]
+    n_features = X_train_red.shape[1]
+
+    cca.train([X_train_red[:n_samples/2, :], y_train[:n_samples/2, :]])
+    testcorrs = cca.validate([X_train_red[n_samples/2:, :], y_train[n_samples/2:, :]])[1]
+    ev = cca.compute_ev([X_train_red[n_samples/2:, :], y_train[n_samples/2:, :]])
+
+    logger.info('found {} correlations: {}, explained variance: {}'.format(len(testcorrs), testcorrs, ev))
+
+    print(ev.shape)
+
+    print(X_train_red.shape)
+    print(X_test_red.shape)
+
+    sys.exit()
 
 
 def get_states(d_rs, k=5):

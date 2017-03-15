@@ -12,6 +12,8 @@ Options:
     --xcorr=TS             A list of timeseries for intrasubject correlation.
     --connectivity=CONN    A list of timeseries for static connectivity.
     --dynamics=DYNA        A list of timeseries for dynamic connectivity.
+    --biotype=BIO          A list of timeseries for biotyping.
+    --bion=N               Number of biotypes to find [default: 0].
     --statmaps=STATS       A list of statmaps .nii.gz (3D) predictors.
     --raw=RAW              A list of column names in database as predictors.
     --predict=PREDICT      A list of column names in database to predict.
@@ -21,7 +23,7 @@ Options:
     --method=METHOD        One of "multiclass", "target", "ysplit", "anomaly".
     --y-cutoff=CUTOFF      % cutoff to find low and high y group. [default: 0.5]
     --target-group=GROUP1  Draw the xbrain template from this group.
-    --two-template=GROUP2  If defined, X is are the difference between target-group and this group.
+    --two-template=GROUP2  If defined, X is the difference between target-group and this group.
     --output=OUTPUT        A directory to place outputs.
     --diagnostics          Run diagnostics on input data.
     --debug                Verbose outputs.
@@ -136,7 +138,7 @@ import string
 import numpy as np
 from scipy.stats import sem, mode
 import pandas as pd
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import KFold, StratifiedKFold
 
 from xbrain.docopt import docopt
 import xbrain.utils as utils
@@ -162,6 +164,8 @@ def main():
     xcorr         = arguments['--xcorr']
     connectivity  = arguments['--connectivity']
     dynamics      = arguments['--dynamics']
+    biotype       = arguments['--biotype']
+    bio_n         = int(arguments['--bion'])
     statmaps      = arguments['--statmaps']
     raw           = arguments['--raw']
     predict       = arguments['--predict']
@@ -212,11 +216,12 @@ def main():
     xcorr = utils.split_columns(xcorr)
     connectivity = utils.split_columns(connectivity)
     dynamics = utils.split_columns(dynamics)
+    biotype = utils.split_columns(biotype)
     raw = utils.split_columns(raw)
     predict = utils.split_columns(predict)
 
     columns = []
-    for variable in [statmaps, xcorr, connectivity, dynamics, raw, predict]:
+    for variable in [statmaps, xcorr, connectivity, dynamics, biotype, raw, predict]:
         if variable:
             utils.assert_columns(db, variable)
             columns.extend(variable)
@@ -230,9 +235,17 @@ def main():
     logger.debug('generating dependent variable vector y')
     y = utils.gather_columns(db, predict)
 
+    # biotype
+    if biotype:
+        method = 'biotype'
+        if bio_n < 2:
+            logger.error('biotyping requires at least 2 clusters, but {} requested'.format(bio_n))
+            sys.exit(1)
+
     # method: valid?
-    if method not in ['multiclass', 'target', 'ysplit', 'anomaly']:
-        logger.error('method {} invalid, pick form "multiclass", "target", "ysplit", "anomaly"'.format(method))
+    methods = ['multiclass', 'target', 'ysplit', 'anomaly', 'biotype']
+    if method not in methods:
+        logger.error('method {} invalid, pick from {}'.format(method, methods))
         sys.exit(1)
     csv_info.writelines('  method={}\n'.format(method))
 
@@ -278,57 +291,58 @@ def main():
 
     if diagnostics:
         # run diagnostics on inputs, no classification (NB: broken)
-        stats.pre_test(db, xcorr, predict, y_cutoff, pct_variance=pct_variance)
+        stats.pre_test(db, xcorr, predict, y_cutoff, output, pct_variance=pct_variance)
 
     # preprocess y in prep for classification experiments
-    if len(y.shape) == 2 and y.shape[1] > 1:
-        # compress y to 1d vector, if required (predicted_values)
-        logger.info('using PCA to reduce {} dvs in y down to 1 component'.format(y.shape[0]))
-        y = stats.pca_reduce(y)
+    if method != 'biotype':
+        if len(y.shape) == 2 and y.shape[1] > 1:
+            # compress y to 1d vector, if required (predicted_values)
+            logger.info('using PCA to reduce {} dvs in y down to 1 component'.format(y.shape[0]))
+            y = stats.pca_reduce(y)
 
-    if method == 'ysplit':
-        if y_cutoff == 'auto':
+        if method == 'ysplit':
+            if y_cutoff == 'auto':
+                # automatically determine values that fall outside of the normal
+                # range by fitting a gaussian to y and looking for extreme values
+                y = stats.find_outliers(y)
+            else:
+                # split y at a pre-defined percentile
+                y = utils.make_dv_groups(y, y_cutoff)
+
+        if method == 'anomaly':
             # automatically determine values that fall outside of the normal
             # range by fitting a gaussian to y and looking for extreme values
             y = stats.find_outliers(y)
         else:
             # split y at a pre-defined percentile
-            y = utils.make_dv_groups(y, y_cutoff)
+            y = stats.make_classes(y)
 
-    if method == 'anomaly':
-        # automatically determine values that fall outside of the normal
-        # range by fitting a gaussian to y and looking for extreme values
-        y = stats.find_outliers(y)
-    else:
-        # split y at a pre-defined percentile
-        y = stats.make_classes(y)
-
-    if target_group:
-        if target_group not in y:
-            logger.error('target_group {} not in y: valid={}'.format(target_group, np.unique(y)))
-            sys.exit(1)
-
-    if method == 'target':
-        # set y values of the target group to 1, and the rest to 0
-        y_tmp = np.zeros(y.shape)
-        y_tmp[y == target_group] = 1
-        y_tmp[y != target_group] = 0
-        y = y_tmp
-
-    # add a column with the preprocessed y groups
-    y_preprocessed = ''.join(random.choice(string.ascii_uppercase) for _ in range(10))
-    db[y_preprocessed] = y
-
-    # ensure target_group, two_template group is one of the groups in y
-    if method != 'anomaly':
-        if xcorr and target_group not in y:
-            logger.error('target group {} not in y: {}'.format(target_group, np.unique(y)))
-            sys.exit(1)
-
-        if two_template:
-            if two_template not in y:
-                logger.error('two template group {} not in y: {}'.format(two_template, np.unique(y)))
+        if target_group:
+            if target_group not in y:
+                logger.error('target_group {} not in y: valid={}'.format(target_group, np.unique(y)))
                 sys.exit(1)
+
+        if method == 'target':
+            # set y values of the target group to 1, and the rest to 0
+            y_tmp = np.zeros(y.shape)
+            y_tmp[y == target_group] = 1
+            y_tmp[y != target_group] = 0
+            y = y_tmp
+
+        # add a column with the preprocessed y groups
+        y_preprocessed = ''.join(random.choice(string.ascii_uppercase) for _ in range(10))
+        db[y_preprocessed] = y
+
+        # ensure target_group, two_template group is one of the groups in y
+        if method != 'anomaly':
+            if xcorr and target_group not in y:
+                logger.error('target group {} not in y: {}'.format(target_group, np.unique(y)))
+                sys.exit(1)
+
+            if two_template:
+                if two_template not in y:
+                    logger.error('two template group {} not in y: {}'.format(two_template, np.unique(y)))
+                    sys.exit(1)
 
     # stores outputs
     # list of tuples [(train1, test1), (train2, test2), ... (trainN, testN)]
@@ -348,15 +362,29 @@ def main():
     if raw:
         X_raw = utils.gather_columns(db, raw)
 
+    if biotype:
+        X_bio = corr.calc_connectivity(db, connectivity)
+
     # stratified k-fold cross validation: split into train and test sets
     logger.info('Outer Loop: {} fold cross validation'.format(k))
-    kf = StratifiedKFold(n_splits=k, shuffle=True)
+
+    # for biotyping, we don't know who the groups are yet, so we can't stratify
+    if method == 'biotype':
+        kf = KFold(n_splits=k, shuffle=True)
+    else:
+        kf = StratifiedKFold(n_splits=k, shuffle=True)
+
     count = 1
-    for train_idx, test_idx in kf.split(np.zeros(len(y)), y):
+    for train_idx, test_idx in kf.split(np.zeros(y.shape[0]), y):
 
         # split the outcome variables into train and test groups
-        y_train = y[train_idx]
-        y_test = y[test_idx]
+        if method != 'biotype':
+            y_train = y[train_idx]
+            y_test = y[test_idx]
+        else:
+            # use CCA, clustering, LDA to find the biotypes for test and train
+            y_train, y_test = stats.biotype(X_bio[train_idx, :], X_bio[test_idx, :], y[train_idx, :])
+            sys.exit()
 
         # cross-brain correlations: calculate X_xcorr from a training templates
         if xcorr:
