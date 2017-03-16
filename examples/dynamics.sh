@@ -1,6 +1,6 @@
 #!/bin/bash
 echo 'diagnosis classification using dynamic functional connectivity analysis (SPINS)'
-./bin/xbrain \
+xbrain \
     --dynamics='ts_rst' \
     --predict='Diagnosis' \
     --method='target' \

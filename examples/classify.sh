@@ -1,6 +1,6 @@
 #!/bin/bash
 echo 'hc/scz diagnosis prediction using resting state and xbrain correlations (IM/OB), all sites, 50% PCA variance retained'
-./bin/xbrain \
+xbrain \
     --xcorr='ts_imi_resid,ts_obs_resid' \
     --connectivity='ts_rst' \
     --predict='Diagnosis' \

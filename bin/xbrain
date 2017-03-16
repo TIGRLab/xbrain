@@ -238,9 +238,6 @@ def main():
     # biotype
     if biotype:
         method = 'biotype'
-        if bio_n < 2:
-            logger.error('biotyping requires at least 2 clusters, but {} requested'.format(bio_n))
-            sys.exit(1)
 
     # method: valid?
     methods = ['multiclass', 'target', 'ysplit', 'anomaly', 'biotype']
@@ -363,7 +360,10 @@ def main():
         X_raw = utils.gather_columns(db, raw)
 
     if biotype:
+        # collect the connectivity features for biotyping
         X_bio = corr.calc_connectivity(db, connectivity)
+        # biotype the full sample
+        n_cc, reg, comps, idx_bio, n_clst = stats.estimate_biotypes(X_bio, y, output)
 
     # stratified k-fold cross validation: split into train and test sets
     logger.info('Outer Loop: {} fold cross validation'.format(k))
@@ -378,17 +378,17 @@ def main():
     for train_idx, test_idx in kf.split(np.zeros(y.shape[0]), y):
 
         # split the outcome variables into train and test groups
-        if method != 'biotype':
-            y_train = y[train_idx]
-            y_test = y[test_idx]
-        else:
-            # use CCA, clustering, LDA to find the biotypes for test and train
-            y_train, y_test = stats.biotype(X_bio[train_idx, :], X_bio[test_idx, :], y[train_idx, :])
-            sys.exit()
+        y_train = y[train_idx]
+        y_test = y[test_idx]
+
+        # biotyping: use CCA, clustering, LDA to calculate y for test and train
+        if method == 'biotype':
+            X_bio_train = X_bio[train_idx, :]
+            X_bio_test = X_bio[test_idx, :]
+            y_train, y_test = stats.biotype(X_bio_train, X_bio_test, y_train, n_cc, reg, idx_bio, n_clst)
 
         # cross-brain correlations: calculate X_xcorr from a training templates
         if xcorr:
-
             logger.debug('xcorr: calculating template 1 (group {})'.format(target_group))
             if method == 'anomaly':
                 # anomaly mode: use all subjects from training data to create X

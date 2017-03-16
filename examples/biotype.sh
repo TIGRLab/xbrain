@@ -1,11 +1,13 @@
 #!/bin/bash
-echo 'outlier detection using resting state, all sites 50% PCA variance retained'
+echo 'biotyping using resting state'
 xbrain \
-    --xcorr='ts_imi_resid,ts_obs_resid' \
     --connectivity='ts_rst' \
+    --biotype='ts_rst' \
     --predict='Part1_TotalCorrect,Part2_TotalCorrect,Part3_TotalCorrect,scog_er40_cr_columnpcr_value' \
-    --method='anomaly' \
     --pct-variance=0.8 \
+    --y-cutoff=0.3 \
+    --method='biotype' \
+    --output='/projects/jviviano/code/xbrain/output/biotype' \
     --debug \
     /projects/jviviano/data/xbrain/assets/database_xbrain.csv
 

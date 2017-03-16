@@ -22,7 +22,10 @@ from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.svm import LinearSVC
 from sklearn.ensemble import RandomForestClassifier, IsolationForest
 from sklearn.metrics import confusion_matrix, accuracy_score, recall_score, precision_score, f1_score, roc_auc_score
+from sklearn.metrics import calinski_harabaz_score, silhouette_score
+from sklearn.cluster import AgglomerativeClustering
 from sklearn.cluster import KMeans
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 
 import matplotlib
 matplotlib.use('Agg')   # Force matplotlib to not use any Xwindows backend
@@ -35,7 +38,6 @@ import xbrain.utils as utils
 import xbrain.rcca as rcca
 
 logger = logging.getLogger(__name__)
-
 
 def classify(X_train, X_test, y_train, y_test, method):
     """
@@ -128,7 +130,7 @@ def classify(X_train, X_test, y_train, y_test, method):
     rec = (recall_score(y_train, X_train_pred), recall_score(y_test, X_test_pred))
     prec = (precision_score(y_train, X_train_pred), precision_score(y_test, X_test_pred))
 
-    if method == 'multiclass':
+    if method == 'multiclass' or method == 'biotype':
         f1 = (f1_score(y_train, X_train_pred, average='weighted'), f1_score(y_test, X_test_pred, average='weighted'))
         auc = (0, 0)
     else:
@@ -151,47 +153,30 @@ def classify(X_train, X_test, y_train, y_test, method):
             'auc': auc,
             'hp_dict': hp_dict}
 
-def biotype(X_train, X_test, y_train, n=0):
+
+def estimate_biotypes(X, y, output):
     """
-    X is a ROI x SUBJECT matrix of features (connectivities, cross-brain
-    correlations, etc.), and y N by SUBJECT matrix of outcome measures (i.e.,
-    cognitive variables, demographics, etc.).
+    Finds features in X that have a significant spearman's rank correlation
+    with at least 1 of the variables in y (uncorrected p < 0.005). The reduced
+    feature set X_red is then used to estimate the optimal number of cannonical
+    variates that represent the mapping between X_red and y using cross
+    validation.
 
-    If n is greater than 0, this will find exactly the number of cannonical
-    variates defined. Otherwise, it will use cross validation to estimate the
-    number of variates.
+    Next, this estimates the optimal number of clusters in the CCA
+    representation of the data.
 
-    Typically, you want to estimate the number of variates before training your
-    classification model, and then try to find the same number of variates for
-    each fold.
-
-    The output of this analysis is a cluster membership per subject. The optimal
-    number of clusters is determined via a split-half resampling method (ref).
-
-    The pipeline is as follows:
-
-    1) Find features in X_train have a significant spearman's rank correlation
-       with at least 1 of the variables in y_test (uncorrected p < 0.005).
-    2) Carry these reduced feature sets forward as X_train_red, X_test_red.
-    2) Use connonical correlation to find a low-dimensional mapping between
-       the reduced feature matrix X_train_red and y_train.
-    3) Cluster the subjects using Ward's hierarchical clustering into biotypes,
-       generating biotype labels (the new y_train).
-    4) Train a linear discriminate classifier on X_train_red and the cluster
-       labels, and then run this model on X_test, to produce biotype labels for
-       the test set (the new y_test).
-
-    This returns y_train and y_test, the discovered biotypes for classification.
+    Returns the indicies of the reduced features set, the number of cannonical
+    variates found, the optimal number of clusters, and the cannonical variates.
     """
-    logger.debug('testing {} X verticies against {} y variables'.format(X_train.shape[1], y_train.shape[1]))
-    idx = np.zeros(X_train.shape[1], dtype=bool)
+    logger.debug('testing {} X verticies against {} y variables'.format(X.shape[1], y.shape[1]))
+    idx = np.zeros(X.shape[1], dtype=bool)
 
     # in a for loop due to the immense size of (X.shape[1]+y.shape[1])^2
     # should implement chunking to speed this up
-    for vertex in range(X_train.shape[1]):
+    for vertex in range(X.shape[1]):
         # takes the p values of the rs between the variation in connectivity in
         # a single vertex, and all predictors of interest
-        p_vals = spearmanr(X_train[:, vertex], y_train)[1][1:, 0]
+        p_vals = spearmanr(X[:, vertex], y)[1][1:, 0]
 
         # if connection is significantly related to any y variable, flag
         if sum(p_vals <= 0.005) > 0:
@@ -199,38 +184,105 @@ def biotype(X_train, X_test, y_train, n=0):
 
     # reduce X_train, X_test
     logger.debug('{} verticies significantly related to at least one variable in y'.format(sum(idx)))
-    X_train_red = X_train[:, idx]
-    X_test_red = X_test[:, idx]
+    X_red = X[:, idx]
 
     # use regularized CCA to determine the optimal number of cannonical variates
     logger.debug('running cannonical correlation analysis to find brain-behaviour mappings')
     regs = np.array(np.logspace(-4, 2, 10)) # regularization b/t 1e-4 and 1e2
+    numCCs = np.arange(2, 11)
 
-    # estimate number of CCs
-    if n <= 0:
-        numCCs = np.arange(2, 11)
-    else:
-        numCCs = n
+    cca = rcca.CCACrossValidate(numCCs=numCCs, regs=regs, verbose=False)
+    cca.train([X, y])
 
-    cca = rcca.CCACrossValidate(numCCs=numCCs, regs=regs)
+    n_cc = cca.best_numCC
+    reg = cca.best_reg
+    # use the components from y, our behavioural measures
+    comps = cca.comps[1]
 
-    # split data in half (train and test) no need to shuffle as data is already
-    # shuffled by the kfold call
-    n_samples = X_train_red.shape[0]
-    n_features = X_train_red.shape[1]
+    # estimate number of clusters by maximizing variance ratio criteria
+    clst_score = np.zeros(18)
+    cluster_tests = np.array(range(2,20))
+    for i, n_clst in enumerate(cluster_tests):
+        # ward's method, euclidean distance
+        clst = AgglomerativeClustering(n_clusters=n_clst)
+        clst.fit(comps)
 
-    cca.train([X_train_red[:n_samples/2, :], y_train[:n_samples/2, :]])
-    testcorrs = cca.validate([X_train_red[n_samples/2:, :], y_train[n_samples/2:, :]])[1]
-    ev = cca.compute_ev([X_train_red[n_samples/2:, :], y_train[n_samples/2:, :]])
+        # CH score gives me a very large number of clusters -- not sure which
+        # to use ATM so sticking with the one that gives me a small number ...
+        # should revisit when I test with many more y features
+        #clst_score[i] = calinski_harabaz_score(comps, clst.labels_)
+        clst_score[i] = silhouette_score(comps, clst.labels_)
 
-    logger.info('found {} correlations: {}, explained variance: {}'.format(len(testcorrs), testcorrs, ev))
+    n_clst = cluster_tests[clst_score == np.max(clst_score)]
 
-    print(ev.shape)
+    # plot biotype info
+    D = squareform(pdist(comps))
+    sns.clustermap(D)
+    sns.plt.savefig(os.path.join(output, 'xbrain_component_clusters'))
+    sns.plt.close()
 
-    print(X_train_red.shape)
-    print(X_test_red.shape)
+    plt.plot(clst_score)
+    plt.title('Calinski Harabaz scores')
+    plt.ylabel('Variance Ratio Criterion')
+    plt.xlabel('Number of Clusters (k)')
+    plt.xticks(range(len(cluster_tests)), cluster_tests)
+    plt.savefig(os.path.join(output, 'xbrain_n_cluster_estimation.pdf'))
+    plt.close()
 
-    sys.exit()
+    return n_cc, reg, comps, idx, n_clst
+
+
+def biotype(X_train, X_test, y_train, n_cc, reg, idx, n_clst):
+    """
+    X is a ROI x SUBJECT matrix of features (connectivities, cross-brain
+    correlations, etc.), and y N by SUBJECT matrix of outcome measures (i.e.,
+    cognitive variables, demographics, etc.).
+
+    Will decompose X_train and y_train into n_cc cannonical variates (n is
+    determined via cross-validation in estimate_biotypes). The previously
+    estimated regularization parameter reg will be used.
+
+    CCA will only be run on the features defined in idx.
+
+    We want to estimate the number of variates before training the model, and
+    then try to find the same number of variates for each fold. Use
+    estimate_cca to find n and idx.
+
+    The pipeline is as follows:
+
+    1) Use connonical correlation to find a n_cc dimentional mapping between
+       the reduced feature matrix X_train_red and y_train.
+    2) Cluster the subjects using Ward's hierarchical clustering into biotypes,
+       generating biotype labels (the new y_train).
+    3) Train a linear discriminate classifier on X_train_red and the cluster
+       labels, and then run this model on X_test, to produce biotype labels for
+       the test set (the new y_test).
+
+    This returns y_train and y_test, the discovered biotypes for classification.
+    """
+    import IPython
+    IPython.embed()
+
+    X_train_red = X_train[:, idx]
+    X_test_red = X_test[:, idx]
+
+    # use regularized CCA to find a mapping from the training set
+    logger.debug('running CCA to find brain-behaviour mappings')
+    cca = rcca.CCA(numCC=n_cc, reg=reg)
+    cca.train([X_train_red, y_train])
+    # take the components from y (behavioural data)
+    comps = cca.comps[1]
+    clst = AgglomerativeClustering(n_clusters=n_clst)
+    clst.fit(comps)
+
+    # take the output of the clustering as our y_training groups
+    y_train = clst.labels_
+
+    # use LDA to predict the labels of the test set
+    lda = LinearDiscriminantAnalysis()
+    lda.fit(X_train_red, y_train)
+
+    return y_train, y_test
 
 
 def get_states(d_rs, k=5):
@@ -618,14 +670,16 @@ def pre_test(db, xcorr, predict, target_cutoff, plot, pct_variance=None):
     """
     logger.info('pre-test: detecting gross relationship between neural and cognitive data')
     X = corr.calc_xbrain(db, db, xcorr)
-    X = clean(X)
+    X = utils.clean(X)
 
     # load y, and compress y to a single vector using PCA if required
-    y = utils.gather_dv(db, predict)
+    y = utils.gather_columns(db, predict)
     if len(y.shape) == 2 and y.shape[0] > 1:
-        y_1d = copy(pca_reduce(y.T))
+        y_1d = copy(pca_reduce(y))
     else:
         y_1d = copy(y)
+
+    print(y_1d.shape)
 
     # plot the y variable (1d) before generating classes
     distributions(y_1d.T, os.path.join(plot, 'xbrain_y_dist.pdf'))
@@ -655,7 +709,7 @@ def pre_test(db, xcorr, predict, target_cutoff, plot, pct_variance=None):
     clst = cluster(X, plot)
 
     # use MDMR to find a relationship between the X matrix and all y predictors
-    F, F_null, v = mdmr(y.T, X, method='euclidean')
+    F, F_null, v = mdmr(y, X, method='euclidean')
     thresholds = sig_cutoffs(F_null, two_sided=False)
     if F > thresholds[1]:
         logger.info('mdmr: relationship detected: F={} > {}, variance explained={}'.format(F, thresholds[1], v))
