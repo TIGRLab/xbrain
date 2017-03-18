@@ -180,19 +180,18 @@ def main():
     debug         = arguments['--debug']
     output        = arguments['--output']
 
-    # logging: debug?
     logger.info('starting')
     if debug:
         logger.setLevel(logging.DEBUG)
+    else:
+        logger.setLevel(logging.INFO)
 
-    # database: valid csv?
     try:
         db = pd.read_csv(database)
     except:
         logger.error('failed to parse input .csv database {}'.format(database))
         sys.exit(1)
 
-    # output: make directory
     if output:
         if not os.path.exists(output):
             try:
@@ -203,10 +202,7 @@ def main():
     else:
         output = os.path.expanduser('~')
 
-    # backup input database
     shutil.copyfile(database, os.path.join(output, 'xbrain_database.csv'))
-
-    # open information file
     csv_info = open(os.path.join(output, 'xbrain_information.csv'), 'wb')
     csv_info.writelines('xbrain run with the following inputs\n  statmaps={}\n  xcorr={}\n  connectivity={}\n  dynamics={}\n  raw={}\n  predict={}\n'.format(
                          statmaps, xcorr, connectivity, dynamics, raw, predict))
@@ -229,7 +225,7 @@ def main():
     db = db[columns]
     n_pre = len(db)
     db = db.dropna(axis=0)
-    logger.debug('database cols: {}, rows: {}/{}'.format(columns, len(db), n_pre))
+    logger.info('database cols: {}, rows remaining after clean: {}/{}'.format(columns, len(db), n_pre))
     csv_info.writelines('options:\n  n={}\n  k={}\n'.format(len(db), k))
 
     logger.debug('generating dependent variable vector y')

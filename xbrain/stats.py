@@ -139,8 +139,8 @@ def classify(X_train, X_test, y_train, y_test, method):
         f1 = (f1_score(y_train, X_train_pred), f1_score(y_test, X_test_pred))
         auc = (roc_auc_score(y_train, X_train_pred), roc_auc_score(y_test, X_test_pred))
 
-    logger.debug('TRAIN: confusion matrix\n{}'.format(confusion_matrix(y_train, X_train_pred)))
-    logger.debug('TEST:  confusion matrix\n{}'.format(confusion_matrix(y_test, X_test_pred)))
+    logger.info('TRAIN: confusion matrix\n{}'.format(confusion_matrix(y_train, X_train_pred)))
+    logger.info('TEST:  confusion matrix\n{}'.format(confusion_matrix(y_test, X_test_pred)))
 
     # check feature importance (QC for HC importance)
     # for fid in np.arange(10):
@@ -195,7 +195,7 @@ def estimate_biotypes(X, y, output):
     regs = np.array(np.logspace(-4, 2, 10)) # regularization b/t 1e-4 and 1e2
     numCCs = np.arange(2, 11)
 
-    cca = rcca.CCACrossValidate(numCCs=numCCs, regs=regs, verbose=False)
+    cca = rcca.CCACrossValidate(numCCs=numCCs, regs=regs, verbose=True)
     cca.train([X, y])
 
     n_cc = cca.best_numCC
