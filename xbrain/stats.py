@@ -127,13 +127,15 @@ def classify(X_train, X_test, y_train, y_test, method):
 
     # collect performance metrics
     acc = (accuracy_score(y_train, X_train_pred), accuracy_score(y_test, X_test_pred))
-    rec = (recall_score(y_train, X_train_pred), recall_score(y_test, X_test_pred))
-    prec = (precision_score(y_train, X_train_pred), precision_score(y_test, X_test_pred))
 
     if method == 'multiclass' or method == 'biotype':
+        rec = (recall_score(y_train, X_train_pred, average='weighted'), recall_score(y_test, X_test_pred, average='weighted'))
+        prec = (precision_score(y_train, X_train_pred, average='weighted'), precision_score(y_test, X_test_pred, average='weighted'))
         f1 = (f1_score(y_train, X_train_pred, average='weighted'), f1_score(y_test, X_test_pred, average='weighted'))
         auc = (0, 0)
     else:
+        rec = (recall_score(y_train, X_train_pred), recall_score(y_test, X_test_pred))
+        prec = (precision_score(y_train, X_train_pred), precision_score(y_test, X_test_pred))
         f1 = (f1_score(y_train, X_train_pred), f1_score(y_test, X_test_pred))
         auc = (roc_auc_score(y_train, X_train_pred), roc_auc_score(y_test, X_test_pred))
 
@@ -168,11 +170,12 @@ def estimate_biotypes(X, y, output):
     Returns the indicies of the reduced features set, the number of cannonical
     variates found, the optimal number of clusters, and the cannonical variates.
     """
-    logger.debug('testing {} X verticies against {} y variables'.format(X.shape[1], y.shape[1]))
-    idx = np.zeros(X.shape[1], dtype=bool)
 
+    # reduce X using the spearman rank correlation between X and y
     # in a for loop due to the immense size of (X.shape[1]+y.shape[1])^2
     # should implement chunking to speed this up
+    logger.debug('testing {} X verticies against {} y variables'.format(X.shape[1], y.shape[1]))
+    idx = np.zeros(X.shape[1], dtype=bool)
     for vertex in range(X.shape[1]):
         # takes the p values of the rs between the variation in connectivity in
         # a single vertex, and all predictors of interest
@@ -182,12 +185,13 @@ def estimate_biotypes(X, y, output):
         if sum(p_vals <= 0.005) > 0:
             idx[vertex] = np.bool(1)
 
-    # reduce X_train, X_test
     logger.debug('{} verticies significantly related to at least one variable in y'.format(sum(idx)))
     X_red = X[:, idx]
 
     # use regularized CCA to determine the optimal number of cannonical variates
-    logger.debug('running cannonical correlation analysis to find brain-behaviour mappings')
+    logger.info('biotyping: cannonical correlation 10-fold cross validation to find brain-behaviour mappings')
+
+    # small search space for testing
     regs = np.array(np.logspace(-4, 2, 10)) # regularization b/t 1e-4 and 1e2
     numCCs = np.arange(2, 11)
 
@@ -196,10 +200,9 @@ def estimate_biotypes(X, y, output):
 
     n_cc = cca.best_numCC
     reg = cca.best_reg
-    # use the components from y, our behavioural measures
-    comps = cca.comps[1]
+    comps = cca.comps[1] # [1] uses the components from y (behavioural data)
 
-    # estimate number of clusters by maximizing variance ratio criteria
+    # estimate number of clusters by maximizing cluster quality criteria
     clst_score = np.zeros(18)
     cluster_tests = np.array(range(2,20))
     for i, n_clst in enumerate(cluster_tests):
@@ -214,6 +217,7 @@ def estimate_biotypes(X, y, output):
         clst_score[i] = silhouette_score(comps, clst.labels_)
 
     n_clst = cluster_tests[clst_score == np.max(clst_score)]
+    logger.info('biotyping: found {} cannonical variates, {} n biotypes'.format(n_cc, n_clst))
 
     # plot biotype info
     D = squareform(pdist(comps))
@@ -260,27 +264,25 @@ def biotype(X_train, X_test, y_train, n_cc, reg, idx, n_clst):
 
     This returns y_train and y_test, the discovered biotypes for classification.
     """
-    import IPython
-    IPython.embed()
-
+    # idx is found using the spearman rank correlations between X and y
     X_train_red = X_train[:, idx]
     X_test_red = X_test[:, idx]
 
-    # use regularized CCA to find a mapping from the training set
-    logger.debug('running CCA to find brain-behaviour mappings')
+    # use regularized CCA to find brain-behaviour mapping from the training set
+    logger.info('biotyping training set')
     cca = rcca.CCA(numCC=n_cc, reg=reg)
     cca.train([X_train_red, y_train])
-    # take the components from y (behavioural data)
-    comps = cca.comps[1]
+    comps = cca.comps[1] # [1] uses the components from y (behavioural data)
+
+    # cluster these components to produce n_clst biotypes, y_train
     clst = AgglomerativeClustering(n_clusters=n_clst)
     clst.fit(comps)
-
-    # take the output of the clustering as our y_training groups
     y_train = clst.labels_
 
-    # use LDA to predict the labels of the test set
+    # use LDA to predict the labels of the test set, y_test
     lda = LinearDiscriminantAnalysis()
     lda.fit(X_train_red, y_train)
+    y_test = lda.predict(X_test_red)
 
     return y_train, y_test
 

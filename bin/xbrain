@@ -257,11 +257,11 @@ def main():
     # target_group: valid?
     if method == 'ysplit':
         target_group = 1
-    if method == 'multiclass' or method == 'target':
+    if method == 'multiclass' or method == 'target' or method == 'biotype':
         if target_group:
             target_group = int(target_group)
         elif xcorr:
-            logger.error('target_group must be defined for "multiclass" and "target" modes when calculating xcorr')
+            logger.error('target_group must be defined for "multiclass", "target", and "biotype"  modes when calculating xcorr')
             sys.exit(1)
     if target_group:
         csv_info.writelines('  target-group={}\n'.format(target_group))
@@ -386,6 +386,14 @@ def main():
             X_bio_train = X_bio[train_idx, :]
             X_bio_test = X_bio[test_idx, :]
             y_train, y_test = stats.biotype(X_bio_train, X_bio_test, y_train, n_cc, reg, idx_bio, n_clst)
+
+            # add a column with the preprocessed y groups
+            #import IPython; IPython.embed()
+            y_preprocessed_data = np.zeros(y.shape[0])
+            y_preprocessed_data[train_idx] = y_train
+            y_preprocessed_data[test_idx] = y_test
+            y_preprocessed = ''.join(random.choice(string.ascii_uppercase) for _ in range(10))
+            db[y_preprocessed] = y_preprocessed_data
 
         # cross-brain correlations: calculate X_xcorr from a training templates
         if xcorr:
