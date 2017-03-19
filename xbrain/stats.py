@@ -137,7 +137,12 @@ def classify(X_train, X_test, y_train, y_test, method):
         rec = (recall_score(y_train, X_train_pred), recall_score(y_test, X_test_pred))
         prec = (precision_score(y_train, X_train_pred), precision_score(y_test, X_test_pred))
         f1 = (f1_score(y_train, X_train_pred), f1_score(y_test, X_test_pred))
-        auc = (roc_auc_score(y_train, X_train_pred), roc_auc_score(y_test, X_test_pred))
+
+        # auc requires more than one class (should count over all folds and calculate once at the end)
+        if len(np.unique(y_test)) > 1:
+            auc = (roc_auc_score(y_train, X_train_pred), roc_auc_score(y_test, X_test_pred))
+        else:
+            auc = (0, 0)
 
     logger.info('TRAIN: confusion matrix\n{}'.format(confusion_matrix(y_train, X_train_pred)))
     logger.info('TEST:  confusion matrix\n{}'.format(confusion_matrix(y_test, X_test_pred)))
@@ -153,6 +158,7 @@ def classify(X_train, X_test, y_train, y_test, method):
             'precision': prec,
             'f1': f1,
             'auc': auc,
+            'X_test_pred': X_test_pred,
             'hp_dict': hp_dict}
 
 

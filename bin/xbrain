@@ -202,7 +202,7 @@ def main():
     else:
         output = os.path.expanduser('~')
 
-    shutil.copyfile(database, os.path.join(output, 'xbrain_database.csv'))
+    #shutil.copyfile(database, os.path.join(output, 'xbrain_database.csv'))
     csv_info = open(os.path.join(output, 'xbrain_information.csv'), 'wb')
     csv_info.writelines('xbrain run with the following inputs\n  statmaps={}\n  xcorr={}\n  connectivity={}\n  dynamics={}\n  raw={}\n  predict={}\n'.format(
                          statmaps, xcorr, connectivity, dynamics, raw, predict))
@@ -342,6 +342,10 @@ def main():
     acc, rec, prec, f1, auc = [], [], [], [], []
     # dict of lists containing the best hyperparameter found for each fold
     hp_dict = collections.defaultdict(list)
+    # holds the predictions on the test sets
+    y_predictions = np.zeros(len(db))
+    # holds the actual y values from the test sets
+    y_actual = np.zeros(len(db))
     # text files for results
     csv_results = open(os.path.join(output, 'xbrain_results.csv'), 'wb')
     csv_results.writelines('k,accuracy_train,accuracy_test,recall_train,recall_test,precision_train,precision_test,f1_train,f1_test,auc_train,auc_test\n')
@@ -364,8 +368,12 @@ def main():
     # stratified k-fold cross validation: split into train and test sets
     logger.info('Outer Loop: {} fold cross validation'.format(k))
 
+    # if k > n_subjects, we set k == n_subjects for leave-one-out cross validation
+    if k > len(db):
+        k = len(db)
+
     # for biotyping, we don't know who the groups are yet, so we can't stratify
-    if method == 'biotype':
+    if method == 'biotype' or k == len(db):
         kf = KFold(n_splits=k, shuffle=True)
     else:
         kf = StratifiedKFold(n_splits=k, shuffle=True)
@@ -489,6 +497,10 @@ def main():
         f1.append(results['f1'])
         auc.append(results['auc'])
 
+        # record the predicted/correct values in the same order as database
+        y_predictions[test_idx] = results['X_test_pred']
+        y_actual[test_idx] = y_test
+
         csv_results.writelines('{},{},{},{},{},{},{},{},{},{},{}\n'.format(
                                 count,
                                 results['accuracy'][0],results['accuracy'][1],
@@ -516,6 +528,11 @@ def main():
     logger.info('final hyperparameters:\n{}'.format(hp_final))
     csv_hyper.writelines(hp_final)
     csv_hyper.close()
+
+    # store predictions, actual values, in reduced database
+    db['y_actual'] = y_actual
+    db['y_predictions'] = y_predictions
+    db.to_csv(os.path.join(output, 'xbrain_database.csv'), index=False)
 
     # final results
     acc_train_mean, acc_test_mean, acc_train_sem, acc_test_sem = parse_results(acc)

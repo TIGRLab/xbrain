@@ -4,9 +4,10 @@ xbrain \
     --xcorr='ts_imi_resid,ts_obs_resid' \
     --connectivity='ts_rst' \
     --predict='Part1_TotalCorrect,Part2_TotalCorrect,Part3_TotalCorrect,scog_er40_cr_columnpcr_value' \
-    --pct-variance=0.5 \
+    --pct-variance=0.9 \
     --y-cutoff='auto' \
+    --k=10 \
+    --output='/projects/jviviano/code/xbrain/output/ysplit' \
     --method='ysplit' \
-    --debug \
     /projects/jviviano/data/xbrain/assets/database_xbrain.csv
 
