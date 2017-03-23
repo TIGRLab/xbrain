@@ -3,7 +3,7 @@
 import pickle
 import numpy as np
 import pandas as pd
-import sys
+import os, sys
 import logging
 from copy import copy
 
@@ -74,7 +74,7 @@ def clean(X):
     if len(idx_zero) > 0:
         logger.debug('removing {} columns in X that are all 0'.format(len(idx_zero)))
         idx = np.arange(X.shape[1])
-        idx = np.setdiff1d(idx, idx_zeros)
+        idx = np.setdiff1d(idx, idx_zero)
         X = X[:, idx]
 
     return(X)
@@ -150,6 +150,19 @@ def make_dv_groups(y, cutoff):
 
     return y
 
+
+def load_biotype(biotype_mdl):
+    """loads a saved biotype model"""
+    if not os.path.isfile(biotype_mdl):
+        raise Exception('{} does not exist'.format(biotype_mdl))
+
+    mdl = np.load(biotype_mdl)
+
+    for key in ['idx', 'comps', 'best_reg', 'clst_centroids', 'n_best_cc', 'n_best_clst']:
+        if key not in mdl.keys():
+            raise Exception('biotype model does not contain variable {}'.format(key))
+
+    return(mdl)
 
 def pickle_it(my_data, save_path):
     f = open(save_path, 'wb')

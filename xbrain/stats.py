@@ -7,6 +7,7 @@ import collections
 import logging
 import random
 import string
+import re
 
 import numpy as np
 from scipy import linalg
@@ -15,16 +16,15 @@ from scipy.stats import lognorm, randint, uniform, mode, spearmanr
 import scipy.cluster.hierarchy as sch
 from scipy.spatial.distance import pdist, squareform
 
-from sklearn.preprocessing import scale, LabelEncoder, label_binarize
-from sklearn.model_selection import RandomizedSearchCV
+from sklearn.preprocessing import scale, LabelEncoder, label_binarize, LabelBinarizer
+from sklearn.model_selection import RandomizedSearchCV, GridSearchCV
+from sklearn.feature_selection import SelectFromModel
 from sklearn.decomposition import PCA
 from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.svm import LinearSVC
 from sklearn.ensemble import RandomForestClassifier, IsolationForest
-from sklearn.metrics import confusion_matrix, accuracy_score, recall_score, precision_score, f1_score, roc_auc_score
-from sklearn.metrics import calinski_harabaz_score, silhouette_score
-from sklearn.cluster import AgglomerativeClustering
-from sklearn.cluster import KMeans
+from sklearn.metrics import confusion_matrix, accuracy_score, recall_score, precision_score, f1_score, roc_auc_score, calinski_harabaz_score, silhouette_score
+from sklearn.cluster import AgglomerativeClustering, KMeans
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 
 import matplotlib
@@ -39,7 +39,14 @@ import xbrain.rcca as rcca
 
 logger = logging.getLogger(__name__)
 
-def classify(X_train, X_test, y_train, y_test, method):
+def powers(n, exps):
+    """returns a list of n raised to the powers in exps"""
+    ns = []
+    for exp in exps:
+        ns.append(n**exp)
+    return(np.array(ns))
+
+def classify(X_train, X_test, y_train, y_test, method, output):
     """
     Trains the selected classifier once on the submitted training data, and
     compares the predicted outputs of the test data with the real labels.
@@ -63,40 +70,46 @@ def classify(X_train, X_test, y_train, y_test, method):
         scoring = 'roc_auc'
         model = 'SVC'
     else:
-        scoring = None
-        model = 'SVC'
+        scoring = 'f1_macro'
+        model = 'Logistic'
 
+    # settings for dimensionality reduction
+    dim_mdl = SelectFromModel(
+                  RandomForestClassifier(n_jobs=6, class_weight='balanced',
+                      n_estimators=2000, max_depth=2, min_samples_split=3))
+    dim_mdl.fit(X_train, y_train)
+    X_train = dim_mdl.transform(X_train)
+    X_test = dim_mdl.transform(X_test)
+    n_features = X_train.shape[1]
+    corr.plot_X(X_train, output, title='test-vs-train', X2=X_test)
+    logger.info('random forest retained {} features'.format(n_features))
+
+    #dim_mdl = LogisticRegression(penalty="l1", class_weight='balanced', n_jobs=6)
+    #dim_hp = {'C': uniform(0.01, 100)}
+    #logger.debug('Inner Loop: Logistic Regression w/ l1 penalty for feature selection')
+    #dim_mdl = RandomizedSearchCV(dim_mdl, dim_hp, n_iter=100, scoring=scoring, verbose=1)
+
+
+    # settings for the classifier
     if model == 'Logistic':
-        model_clf = LogisticRegression()
-        hyperparams = {'C': [0.2, 0.6, 0.8, 1, 1.2] }
+        clf_mdl = LogisticRegression(class_weight='balanced', verbose=1)
+        clf_hp = {'C': np.arange(0.1, 2.1, 0.1), 'penalty': ['l1', 'l2']}
         scale_data = True
-        feat_imp = False
     elif model == 'SVC':
-        model_clf = LinearSVC()
-        # scale normally == 0.1, testing 0.5 to explore larger values of C...
-        hyperparams = {'class_weight': ['balanced'],
-                       'tol': uniform(0.0001, 0.01),
-                       'C': lognorm(2, loc=0.0000001, scale=0.5),
-                       'max_iter': [10000]}
+        clf_mdl = LinearSVC(max_iter=10000, tol=0.00001, class_weight='balanced')
+        clf_hp = {'C': powers(2, range(-20,5))} # replaces lognorm(10, loc=2**-15, scale=0.001)
         scale_data = True
-        feat_imp = True
     elif model == 'RFC':
-        model_clf = RandomForestClassifier(n_jobs=6)
-        hyperparams = {'class_weight': ['balanced'],
-                       'n_estimators': [1000],
-                       'min_samples_split': randint(int(n_features*0.025), int(n_features*0.2)),
-                       'min_samples_leaf': randint(int(n_features*0.025), int(n_features*0.2)),
-                       'criterion': ['gini', 'entropy']}
+        clf_mdl = RandomForestClassifier(n_jobs=6, class_weight='balanced', n_estimators=1000)
+        clf_hp = {'min_samples_split': randint(int(n_features*0.025), int(n_features*0.2)),
+                  'min_samples_leaf': randint(int(n_features*0.025), int(n_features*0.2)),
+                  'criterion': ['gini', 'entropy']}
         scale_data = False
-        feat_imp = True
     elif model == 'RIF':
         pct_outliers = len(np.where(y_train == -1)[0]) / float(len(y_train))
-        model_clf = IsolationForest(n_jobs=6, n_estimators=1000, contamination=pct_outliers)
-        hyperparams = {'n_estimators': [1000],
-                       'contamination': [pct_outliers],
-                       'max_samples': [n_features]}
+        clf_mdl = IsolationForest(n_jobs=6, n_estimators=1000, contamination=pct_outliers, max_samples=n_features)
+        clf_hp = {}
         scale_data = False
-        feat_imp = True
 
     if scale_data:
         X_train = scale(X_train)
@@ -108,14 +121,16 @@ def classify(X_train, X_test, y_train, y_test, method):
         clf.fit(X_train)
         hp_dict = hyperparams
     else:
-        logger.debug('Inner Loop: Randomized CV of hyperparameters for this fold')
-        clf = RandomizedSearchCV(model_clf, hyperparams, n_iter=1000, scoring=scoring)
-        clf.fit(X_train, y_train)
-        logger.debug('Inner Loop complete, best parameters found:\n{}'.format(clf.best_estimator_.get_params()))
 
-        # collect all the best hyperparameters found in the cv loop
-        for hp in hyperparams:
-            hp_dict[hp].append(clf.best_estimator_.get_params()[hp])
+        logger.debug('Inner Loop: Classification using {}'.format(model))
+        clf = GridSearchCV(clf_mdl, clf_hp, scoring=scoring, verbose=1)
+        clf.fit(X_train, y_train)
+
+        # record best classification hyperparameters found
+        for hp in clf_hp:
+            hp_dict[hp].append(clf.best_params_[hp])
+        logger.info('Inner Loop complete, best parameters found:\n{}'.format(hp_dict))
+        logger.info('maximum test score during hyperparameter CV ({}): {}'.format(scoring, np.max(clf.cv_results_['mean_test_score'])))
 
     X_train_pred = clf.predict(X_train)
     X_test_pred = clf.predict(X_test)
@@ -127,22 +142,15 @@ def classify(X_train, X_test, y_train, y_test, method):
 
     # collect performance metrics
     acc = (accuracy_score(y_train, X_train_pred), accuracy_score(y_test, X_test_pred))
+    rec = (recall_score(y_train, X_train_pred, average='macro'), recall_score(y_test, X_test_pred, average='macro'))
+    prec = (precision_score(y_train, X_train_pred, average='macro'), precision_score(y_test, X_test_pred, average='macro'))
+    f1 = (f1_score(y_train, X_train_pred, average='macro'), f1_score(y_test, X_test_pred, average='macro'))
 
-    if method == 'multiclass' or method == 'biotype':
-        rec = (recall_score(y_train, X_train_pred, average='weighted'), recall_score(y_test, X_test_pred, average='weighted'))
-        prec = (precision_score(y_train, X_train_pred, average='weighted'), precision_score(y_test, X_test_pred, average='weighted'))
-        f1 = (f1_score(y_train, X_train_pred, average='weighted'), f1_score(y_test, X_test_pred, average='weighted'))
-        auc = (0, 0)
-    else:
-        rec = (recall_score(y_train, X_train_pred), recall_score(y_test, X_test_pred))
-        prec = (precision_score(y_train, X_train_pred), precision_score(y_test, X_test_pred))
-        f1 = (f1_score(y_train, X_train_pred), f1_score(y_test, X_test_pred))
-
-        # auc requires more than one class (should count over all folds and calculate once at the end)
-        if len(np.unique(y_test)) > 1:
-            auc = (roc_auc_score(y_train, X_train_pred), roc_auc_score(y_test, X_test_pred))
-        else:
-            auc = (0, 0)
+    # transforms labels to label indicator format, needed for multiclass
+    lb = LabelBinarizer()
+    lb.fit(y_train)
+    auc = (roc_auc_score(lb.transform(y_train), lb.transform(X_train_pred), average='macro'),
+           roc_auc_score(lb.transform(y_test), lb.transform(X_test_pred), average='macro'))
 
     logger.info('TRAIN: confusion matrix\n{}'.format(confusion_matrix(y_train, X_train_pred)))
     logger.info('TEST:  confusion matrix\n{}'.format(confusion_matrix(y_test, X_test_pred)))
@@ -159,6 +167,7 @@ def classify(X_train, X_test, y_train, y_test, method):
             'f1': f1,
             'auc': auc,
             'X_test_pred': X_test_pred,
+            'n_features_retained': n_features,
             'hp_dict': hp_dict}
 
 
@@ -198,20 +207,21 @@ def estimate_biotypes(X, y, output):
     logger.info('biotyping: cannonical correlation 10-fold cross validation to find brain-behaviour mappings')
 
     # small search space for testing
-    regs = np.array(np.logspace(-4, 2, 10)) # regularization b/t 1e-4 and 1e2
+    #regs = np.array(np.logspace(-4, 2, 10)) # regularization b/t 1e-4 and 1e2
+    regs = np.array(np.logspace(-4, 2, 3)) # regularization b/t 1e-4 and 1e2
     numCCs = np.arange(2, 11)
 
     cca = rcca.CCACrossValidate(numCCs=numCCs, regs=regs, verbose=True)
     cca.train([X, y])
 
-    n_cc = cca.best_numCC
-    reg = cca.best_reg
-    comps = cca.comps[1] # [1] uses the components from y (behavioural data)
+    n_best_cc = cca.best_numCC
+    best_reg = cca.best_reg
+    comps = cca.comps[0] # [0] uses comps from X, [1] uses comps from y
 
     # estimate number of clusters by maximizing cluster quality criteria
     clst_score = np.zeros(18)
-    cluster_tests = np.array(range(2,20))
-    for i, n_clst in enumerate(cluster_tests):
+    clst_tests = np.array(range(2,20))
+    for i, n_clst in enumerate(clst_tests):
         # ward's method, euclidean distance
         clst = AgglomerativeClustering(n_clusters=n_clst)
         clst.fit(comps)
@@ -222,12 +232,34 @@ def estimate_biotypes(X, y, output):
         #clst_score[i] = calinski_harabaz_score(comps, clst.labels_)
         clst_score[i] = silhouette_score(comps, clst.labels_)
 
-    n_clst = cluster_tests[clst_score == np.max(clst_score)]
-    logger.info('biotyping: found {} cannonical variates, {} n biotypes'.format(n_cc, n_clst))
+    # take the best performing clustering
+    n_best_clst = cluster_tests[clst_score == np.max(clst_score)][0]
+    clst = AgglomerativeClustering(n_clusters=n_best_clst)
+    clst.fit(comps)
+    clst_labels = clst.labels_
+
+    # calculate connectivity centroids for each biotype
+    clst_centroids = np.zeros((n_best_clst, X.shape[1]))
+    for n in range(n_best_clst):
+        clst_centroids[n, :] = np.mean(X[clst_labels == n, :], axis=0)
+
+    logger.info('biotyping: found {} cannonical variates, {} n biotypes'.format(n_cc, n_best_clst))
+
+    # save biotype information
+    np.savez_compressed(os.path.join(output, 'xbrain_biotype.npz'),
+                                              clst_centroids=clst_centroids,
+                                              n_best_clst=n_best_clst,
+                                              n_best_cc=n_best_cc,
+                                              best_reg=best_reg,
+                                              idx=idx,
+                                              comps=comps,
+                                              X=X,
+                                              y=y)
+    mdl = np.load(os.path.join(output, 'xbrain_biotype.npz'))
 
     # plot biotype info
-    D = squareform(pdist(comps))
-    sns.clustermap(D)
+    #D = squareform(pdist(comps))
+    sns.clustermap(comps, method='ward', metric='euclidean')
     sns.plt.savefig(os.path.join(output, 'xbrain_component_clusters'))
     sns.plt.close()
 
@@ -239,10 +271,10 @@ def estimate_biotypes(X, y, output):
     plt.savefig(os.path.join(output, 'xbrain_n_cluster_estimation.pdf'))
     plt.close()
 
-    return n_cc, reg, comps, idx, n_clst
+    return mdl
 
 
-def biotype(X_train, X_test, y_train, n_cc, reg, idx, n_clst):
+def biotype(X_train, X_test, y_train, mdl):
     """
     X is a ROI x SUBJECT matrix of features (connectivities, cross-brain
     correlations, etc.), and y N by SUBJECT matrix of outcome measures (i.e.,
@@ -251,6 +283,8 @@ def biotype(X_train, X_test, y_train, n_cc, reg, idx, n_clst):
     Will decompose X_train and y_train into n_cc cannonical variates (n is
     determined via cross-validation in estimate_biotypes). The previously
     estimated regularization parameter reg will be used.
+
+    mdl is a dictionary containing biotype information (see estimate_biotypes).
 
     CCA will only be run on the features defined in idx.
 
@@ -270,6 +304,12 @@ def biotype(X_train, X_test, y_train, n_cc, reg, idx, n_clst):
 
     This returns y_train and y_test, the discovered biotypes for classification.
     """
+    # get information from biotype model
+    idx = mdl['idx']
+    n_clst = mdl['n_best_clst']
+    reg = mdl['best_reg']
+    n_cc = mdl['n_best_cc']
+
     # idx is found using the spearman rank correlations between X and y
     X_train_red = X_train[:, idx]
     X_test_red = X_test[:, idx]
@@ -278,7 +318,7 @@ def biotype(X_train, X_test, y_train, n_cc, reg, idx, n_clst):
     logger.info('biotyping training set')
     cca = rcca.CCA(numCC=n_cc, reg=reg)
     cca.train([X_train_red, y_train])
-    comps = cca.comps[1] # [1] uses the components from y (behavioural data)
+    comps = cca.comps[0] # [0] uses comps from X, [1] uses comps from y
 
     # cluster these components to produce n_clst biotypes, y_train
     clst = AgglomerativeClustering(n_clusters=n_clst)
@@ -544,13 +584,13 @@ def pca_plot(X, y, plot):
     plt.close()
 
 
-def pca_reduce(X, n=1, pct=1, X2=False):
+def pca_reduce(X, n=1, pct=0, X2=False):
     """
     Uses PCA to reduce the number of features in the input matrix X. n is
     the target number of features in X to retain after reduction. pct is the
     target amount of variance (%) in the original matrix X to retain in the
     reduced feature matrix. When n and pct disagree, compresses the feature
-    matrix to the smaller number of features. If X2 is defined, the same
+    matrix to the larger number of features. If X2 is defined, the same
     transform learned from X is applied to X2.
     """
     if not utils.is_probability(pct):
@@ -559,32 +599,23 @@ def pca_reduce(X, n=1, pct=1, X2=False):
     clf = PCA()
     clf = clf.fit(X)
     cumulative_var = np.cumsum(clf.explained_variance_ratio_)
+    n_comp_pct = np.where(cumulative_var >= pct)[0][0] + 1 # fixes zero indexing
 
-    # calculate variance retained in the n components case
-    pct_n_case = cumulative_var[n-1] # correct for zero indexing
-
-    # calculate # of components that would be retained in the pct case
-    if pct < 1:
-        n_comp_pct = np.where(cumulative_var >= pct)[0][0]
-    else:
-        n_comp_pct = len(cumulative_var)-1
-
-    # case where we retain pre-defined % of the variance
-    if n_comp_pct < n:
-        cutoff = n_comp_pct + 1 # correct for zero indexing
-    # case where we use pre-defined number of components
-    else:
-        pct = pct_n_case
+    if n > n_comp_pct:
+        pct_retained = cumulative_var[n-1]
         cutoff = n
+    else:
+        pct_retained = cumulative_var[n_comp_pct-1]
+        cutoff = n_comp_pct
 
-    logger.info('X {} reduced to {} components, retaining {} % of variance'.format(X.shape, cutoff, pct))
+    logger.info('X {} reduced to {} components, retaining {} % of variance'.format(X.shape, cutoff, pct_retained))
 
     # reduce X to the defined number of components
     clf = PCA(n_components=cutoff)
     clf.fit(X)
     X_transformed = clf.transform(X)
 
-    # sign flip potentially applied if we only retain 1 component
+    # sign 1st PC of X if inverse to mean of X
     if cutoff == 1:
         X_transformed = sign_flip(X_transformed, X)
 
@@ -592,7 +623,6 @@ def pca_reduce(X, n=1, pct=1, X2=False):
     if np.any(X2):
         X2_transformed = clf.transform(X2)
 
-        # sign flip potentially applied if we only retain 1 component
         if cutoff == 1:
             X2_transformed = sign_flip(X2_transformed, X)
 
@@ -618,12 +648,17 @@ def sign_flip(X_transformed, X):
     return(X_transformed)
 
 
-def make_classes(y):
-    """transforms label values for classification"""
+def make_classes(y, target_group):
+    """transforms label values for classification, including target_group"""
     le = LabelEncoder()
     le.fit(y)
     logger.info('y labels {} transformed to {}'.format(le.classes_, np.arange(len(le.classes_))))
-    return(le.transform(y))
+    y = le.transform(y)
+
+    if target_group:
+        target_group = int(np.where(target_group == le.classes_)[0][0]) # ugly type gymnastics should be fixed
+
+    return(y, target_group)
 
 
 def cluster(X, plot, n_clust=2):
@@ -659,70 +694,72 @@ def distributions(y, plot):
     sns.plt.close()
 
 
-def pre_test(db, xcorr, predict, target_cutoff, plot, pct_variance=None):
+def diagnostics(X_train, X_test, y_train, y_test, y_train_raw, output):
     """
-    A diagnostic pipeline for assessing the inputs to the classifier.
+    A pipeline for assessing the inputs to the classifier. Runs on
+    a single fold.
 
-    + Loads X and y. If y has multiple preditors, the top PC is calculated. The
-      vector is then thresholded at target_cutoff percentile.
-    + If pct_variance is defined, X is reduced using PCA to the number of
-      features required to capture that amount of variance (%).
-    + Plots a distribution of y, compressed to 1 PC.
-    + Saves a .csv with this compressed version of y.
-    + Thresholds y, and plots the top 3 PCs of X, with points colored by group
-      y. This plot should have no obvious structure.
-    + Plots a hierarchical clustering of the (possibly reduced) feature matrix
-      X.
-    + Uses MDMR to detect relationship between cognitive variables and MRI data.
-      Good v scores are ~ 0.1, or 10%.
+    + Loads X and y. If y_raw has multiple preditors, the top PC is calculated.
+    + Plots a distribution of y_raw, compressed to 1 PC.
+    + Saves a .csv with this compressed version of y_raw.
+    + Plots the top 3 PCs of X_train, with points colored by group y_train. This
+      plot should have no trivial structure.
+    + Plots a hierarchical clustering of X_train.
+    + Uses MDMR to detect relationship between y_raw and X_train.
+    + Runs iterative classification of the training data using logistic
+      regression and l1 regularization with varying levels of C.
     """
     logger.info('pre-test: detecting gross relationship between neural and cognitive data')
-    X = corr.calc_xbrain(db, db, xcorr)
-    X = utils.clean(X)
-
-    # load y, and compress y to a single vector using PCA if required
-    y = utils.gather_columns(db, predict)
-    if len(y.shape) == 2 and y.shape[0] > 1:
-        y_1d = copy(pca_reduce(y))
+    # compress y to a single vector using PCA if required
+    if len(y_train_raw.shape) == 2 and y_train_raw.shape[0] > 1:
+        y_1d = copy(pca_reduce(y_train_raw))
     else:
-        y_1d = copy(y)
-
-    print(y_1d.shape)
+        y_1d = copy(y_train_raw)
 
     # plot the y variable (1d) before generating classes
-    distributions(y_1d.T, os.path.join(plot, 'xbrain_y_dist.pdf'))
+    distributions(y_1d.T, os.path.join(output, 'xbrain_y_dist.pdf'))
 
-    # print the top 3 PCs of X, colour coding by y group (diagnostic for site effects etc)
-    pca_plot(X, y_1d, plot)
+    # print the top 3 PCs of X, colour coding by y group (is X trivially seperable?)
+    pca_plot(X_train, y_train, output)
 
-    # save the y vector before gathering classes
-    np.savetxt(os.path.join(plot, 'xbrain_y.csv'), y_1d, delimiter=',')
-
-    # convert y into classes, thresholding if required
-    if len(np.unique(y_1d)) > 10:
-        logger.info('splitting y into two groups: {} percentile cutoff'.format(target_cutoff))
-        y_groups = utils.make_dv_groups(y_1d, target_cutoff)
-    else:
-        y_groups = copy(y_1d)
-    y_groups = make_classes(y_groups)
-
-    # compress the number of features X if required
-    if pct_variance:
-        X = pca_reduce(X, n=X.shape[0], pct=pct_variance)
-
-    # save the X matrix
-    np.savetxt(os.path.join(plot, 'xbrain_X.csv'), X, delimiter=',')
+    np.save(os.path.join(output, 'xbrain_y.npy'), y_1d)
+    np.save(os.path.join(output, 'xbrain_X.npy'), X_train)
 
     # plot a hierarchical clustering of the feature matrix X
-    clst = cluster(X, plot)
+    clst = cluster(X_train, output)
 
     # use MDMR to find a relationship between the X matrix and all y predictors
-    F, F_null, v = mdmr(y, X, method='euclidean')
-    thresholds = sig_cutoffs(F_null, two_sided=False)
-    if F > thresholds[1]:
-        logger.info('mdmr: relationship detected: F={} > {}, variance explained={}'.format(F, thresholds[1], v))
-    else:
-        logger.warn('mdmr: no relationship detected, variance explained={}'.format(v))
+    # broken -- need to go over matrix transpositions...
+    #F, F_null, v = mdmr(y_train_raw, X_train, method='euclidean')
+    #thresholds = sig_cutoffs(F_null, two_sided=False)
+    #if F > thresholds[1]:
+    #    logger.info('mdmr: relationship detected: F={} > {}, variance explained={}'.format(F, thresholds[1], v))
+    #else:
+    #    logger.warn('mdmr: no relationship detected, variance explained={}'.format(v))
+
+    # sparsity test over a range of C values
+    Cs = powers(2, np.arange(-7, 7, 0.5))
+    features, train_score, test_score = [], [], []
+    for C in Cs:
+        # fit a logistic regression model with l1 penalty (for sparsity)
+        mdl = LogisticRegression(n_jobs=6, class_weight='balanced', penalty='l1', C=C)
+        mdl.fit(X_train, y_train)
+        # use non-zero weighted features to reduce X
+        dim_mdl = SelectFromModel(mdl, prefit=True)
+        X_train_pred = mdl.predict(X_train)
+        X_test_pred= mdl.predict(X_test)
+        features.append(dim_mdl.transform(X_train).shape[1])
+        train_score.append(f1_score(y_train, X_train_pred, average='macro'))
+        test_score.append(f1_score(y_test, X_test_pred, average='macro'))
+
+    # plot test and train scores against number of features retained
+    plt.plot(train_score, color='black')
+    plt.plot(test_score, color='red')
+    plt.xticks(np.arange(len(features)), features)
+    plt.legend(['train', 'test'])
+    plt.xlabel('n features retained')
+    plt.ylabel('F1 score (macro)')
+    plt.savefig(os.path.join(output, 'xbrain_overfit-analysis.pdf'))
 
     sys.exit()
 
