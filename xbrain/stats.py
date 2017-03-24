@@ -75,21 +75,24 @@ def classify(X_train, X_test, y_train, y_test, method, output):
 
     # use random forest for feature selection if we have 10x more features than samples
     if X_train.shape[1] > X_train.shape[0]*10:
-        logger.info('using random forest for feature selection since features={} > samples={}*10'.format(X_train.shape[1], X_train.shape[0]))
-        dim_mdl = SelectFromModel(
-                      RandomForestClassifier(n_jobs=6, class_weight='balanced',
-                          n_estimators=2000, max_depth=2, min_samples_split=3))
+        #logger.info('using random forest for feature selection since features={} > samples={}*10'.format(X_train.shape[1], X_train.shape[0]))
+        #dim_mdl = SelectFromModel(
+        #              RandomForestClassifier(n_jobs=6, class_weight='balanced',
+        #                  n_estimators=2000, max_depth=2, min_samples_split=3))
+        #dim_mdl.fit(X_train, y_train)
+        #X_train = dim_mdl.transform(X_train)
+        #X_test = dim_mdl.transform(X_test)
+        #n_features = X_train.shape[1]
+        #corr.plot_X(X_train, output, title='test-vs-train', X2=X_test)
+        #logger.info('random forest retained {} features'.format(n_features))
+
+        dim_mdl = LogisticRegression(penalty="l1", class_weight='balanced', n_jobs=6)
+        dim_hp = {'C': uniform(0.01, 100)}
+        logger.debug('Inner Loop: Logistic Regression w/ l1 penalty for feature selection')
+        dim_mdl = RandomizedSearchCV(dim_mdl, dim_hp, n_iter=100, scoring=scoring, verbose=1)
         dim_mdl.fit(X_train, y_train)
         X_train = dim_mdl.transform(X_train)
         X_test = dim_mdl.transform(X_test)
-        n_features = X_train.shape[1]
-        corr.plot_X(X_train, output, title='test-vs-train', X2=X_test)
-        logger.info('random forest retained {} features'.format(n_features))
-
-        #dim_mdl = LogisticRegression(penalty="l1", class_weight='balanced', n_jobs=6)
-        #dim_hp = {'C': uniform(0.01, 100)}
-        #logger.debug('Inner Loop: Logistic Regression w/ l1 penalty for feature selection')
-        #dim_mdl = RandomizedSearchCV(dim_mdl, dim_hp, n_iter=100, scoring=scoring, verbose=1)
 
     # settings for the classifier
     if model == 'Logistic':
@@ -118,7 +121,7 @@ def classify(X_train, X_test, y_train, y_test, method, output):
 
     # perform randomized hyperparameter search to find optimal settings
     if method == 'anomaly':
-        clf = clf_mfl
+        clf = clf_mdl
         clf.fit(X_train)
         hp_dict = hyperparams
     else:

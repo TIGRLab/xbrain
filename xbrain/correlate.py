@@ -228,7 +228,6 @@ def calc_xbrain(template_db, db, timeseries):
         # loop through subjects
         for j, subj in enumerate(db_idx):
             if j == 0:
-                print(template_ts.shape)
                 n_roi, n_tr, n_subjects = template_ts.shape
                 # for the first timeseries, initialize the output array
                 # this is if we only store the diagonal

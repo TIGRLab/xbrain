@@ -16,3 +16,10 @@ This is WIP, but the basic feature set is as follows:
 + if y is discrete (e.g., diagnosis), xcorr correlates all subject's data with the target group.
 + biotyping is performed using regularized cannonical correlation analysis followed by hierarchical clustering. Details on the regularized CCA implementation [here](http://journal.frontiersin.org/article/10.3389/fninf.2016.00049/full).
 
+TODO:
+
++ Ensure scikit learn does not require y variables to be centered around zero (e.g., -1, +1)
++ Try l1 penalty with SVC. Compare to LogisticRegression.
++ ICA vs PCA vs dictionarylearning. PCA performs poorly.
++ Nikhil: "8-10 features". So smol. :(
+
