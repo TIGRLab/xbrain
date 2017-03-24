@@ -234,7 +234,7 @@ def estimate_biotypes(X, y, output):
         clst_score[i] = silhouette_score(comps, clst.labels_)
 
     # take the best performing clustering
-    n_best_clst = cluster_tests[clst_score == np.max(clst_score)][0]
+    n_best_clst = clst_tests[clst_score == np.max(clst_score)][0]
     clst = AgglomerativeClustering(n_clusters=n_best_clst)
     clst.fit(comps)
     clst_labels = clst.labels_
