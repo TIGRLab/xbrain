@@ -24,7 +24,7 @@ from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.svm import LinearSVC
 from sklearn.ensemble import RandomForestClassifier, IsolationForest
 from sklearn.metrics import confusion_matrix, accuracy_score, recall_score, precision_score, f1_score, roc_auc_score, calinski_harabaz_score, silhouette_score
-from sklearn.cluster import AgglomerativeClustering, KMeans
+from sklearn.cluster import AgglomerativeClustering, MiniBatchKMeans
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 
 import matplotlib
@@ -71,24 +71,25 @@ def classify(X_train, X_test, y_train, y_test, method, output):
         model = 'SVC'
     else:
         scoring = 'f1_macro'
-        model = 'Logistic'
+        model = 'SVC'
 
-    # settings for dimensionality reduction
-    dim_mdl = SelectFromModel(
-                  RandomForestClassifier(n_jobs=6, class_weight='balanced',
-                      n_estimators=2000, max_depth=2, min_samples_split=3))
-    dim_mdl.fit(X_train, y_train)
-    X_train = dim_mdl.transform(X_train)
-    X_test = dim_mdl.transform(X_test)
-    n_features = X_train.shape[1]
-    corr.plot_X(X_train, output, title='test-vs-train', X2=X_test)
-    logger.info('random forest retained {} features'.format(n_features))
+    # use random forest for feature selection if we have 10x more features than samples
+    if X_train.shape[1] > X_train.shape[0]*10:
+        logger.info('using random forest for feature selection since features={} > samples={}*10'.format(X_train.shape[1], X_train.shape[0]))
+        dim_mdl = SelectFromModel(
+                      RandomForestClassifier(n_jobs=6, class_weight='balanced',
+                          n_estimators=2000, max_depth=2, min_samples_split=3))
+        dim_mdl.fit(X_train, y_train)
+        X_train = dim_mdl.transform(X_train)
+        X_test = dim_mdl.transform(X_test)
+        n_features = X_train.shape[1]
+        corr.plot_X(X_train, output, title='test-vs-train', X2=X_test)
+        logger.info('random forest retained {} features'.format(n_features))
 
-    #dim_mdl = LogisticRegression(penalty="l1", class_weight='balanced', n_jobs=6)
-    #dim_hp = {'C': uniform(0.01, 100)}
-    #logger.debug('Inner Loop: Logistic Regression w/ l1 penalty for feature selection')
-    #dim_mdl = RandomizedSearchCV(dim_mdl, dim_hp, n_iter=100, scoring=scoring, verbose=1)
-
+        #dim_mdl = LogisticRegression(penalty="l1", class_weight='balanced', n_jobs=6)
+        #dim_hp = {'C': uniform(0.01, 100)}
+        #logger.debug('Inner Loop: Logistic Regression w/ l1 penalty for feature selection')
+        #dim_mdl = RandomizedSearchCV(dim_mdl, dim_hp, n_iter=100, scoring=scoring, verbose=1)
 
     # settings for the classifier
     if model == 'Logistic':
@@ -100,9 +101,9 @@ def classify(X_train, X_test, y_train, y_test, method, output):
         clf_hp = {'C': powers(2, range(-20,5))} # replaces lognorm(10, loc=2**-15, scale=0.001)
         scale_data = True
     elif model == 'RFC':
-        clf_mdl = RandomForestClassifier(n_jobs=6, class_weight='balanced', n_estimators=1000)
-        clf_hp = {'min_samples_split': randint(int(n_features*0.025), int(n_features*0.2)),
-                  'min_samples_leaf': randint(int(n_features*0.025), int(n_features*0.2)),
+        clf_mdl = RandomForestClassifier(n_jobs=6, class_weight='balanced', n_estimators=2000)
+        clf_hp = {'min_samples_split': np.round(np.linspace(n_features*0.025, n_features*0.2, 10)),
+                  'max_depth': np.array([None, 2, 4, 6, 8, 10]),
                   'criterion': ['gini', 'entropy']}
         scale_data = False
     elif model == 'RIF':
@@ -117,7 +118,7 @@ def classify(X_train, X_test, y_train, y_test, method, output):
 
     # perform randomized hyperparameter search to find optimal settings
     if method == 'anomaly':
-        clf = model_clf
+        clf = clf_mfl
         clf.fit(X_train)
         hp_dict = hyperparams
     else:
@@ -337,8 +338,11 @@ def get_states(d_rs, k=5):
     """
     Accepts a ROI x TIMEPOINT dynamic connectivity matrix, and returns K states
     as determined by K-means clustering (ROI x STATE).
+
+    Uses a slighly less accurate implementation of kmeans designed for very
+    large numbers of samples: D. Sculley, Web-Scale K-Means Clustering.
     """
-    clf = KMeans(copy_x=False, n_clusters=k)
+    clf = MiniBatchKMeans(n_clusters=k)
     logger.debug('running kmeans on X {}, k={}'.format(d_rs.shape, k))
     clf.fit(d_rs.T)
     return(clf.cluster_centers_.T)
@@ -624,7 +628,7 @@ def pca_reduce(X, n=1, pct=0, X2=False):
         X2_transformed = clf.transform(X2)
 
         if cutoff == 1:
-            X2_transformed = sign_flip(X2_transformed, X)
+            X2_transformed = sign_flip(X2_transformed, X2)
 
         logger.debug('PCA transform learned on X applied to X2')
         return(X_transformed, X2_transformed)

@@ -95,7 +95,7 @@ def dynamic_connectivity(ts, win_length, win_step):
     Calculates dynamic (sliding window) connectivity from input timeseries data,
     and outputs a roi x window matrix.
     """
-    n_vox, n_tr = ts.shape
+    n_roi, n_tr = ts.shape
 
     # initialize the window
     idx_start = 0
@@ -109,7 +109,7 @@ def dynamic_connectivity(ts, win_length, win_step):
         idx_end += win_step
 
     # store the upper half of each connectivity matrix for each window
-    idx_triu = np.triu_indices(n_vox, k=1)
+    idx_triu = np.triu_indices(n_roi, k=1)
     output = np.zeros((len(idx_triu[0]), len(windows)))
 
     # calculate taper (downweight early and late timepoints)
@@ -117,7 +117,7 @@ def dynamic_connectivity(ts, win_length, win_step):
 
     for i, window in enumerate(windows):
         # extract sample, apply taper
-        sample = ts[:, window[0]:window[1]] * np.repeat(taper, n_vox, axis=0)
+        sample = ts[:, window[0]:window[1]] * np.repeat(taper, n_roi, axis=0)
 
         # keep upper triangle of correlation matrix
         test = np.corrcoef(sample)
@@ -225,12 +225,17 @@ def calc_xbrain(template_db, db, timeseries):
         # get a timepoint X roi X subject matrix from the template
         template_ts = get_column_ts(template_db, column)
 
-
         # loop through subjects
         for j, subj in enumerate(db_idx):
             if j == 0:
+                print(template_ts.shape)
+                n_roi, n_tr, n_subjects = template_ts.shape
                 # for the first timeseries, initialize the output array
-                xcorrs = np.zeros((n, template_ts.shape[0]))
+                # this is if we only store the diagonal
+                #xcorrs = np.zeros((n, template_ts.shape[0]))
+                # this is for storing the top half of the matrix
+                idx_triu = np.triu_indices(n_roi)
+                xcorrs = np.zeros((n, len(np.ravel(idx_triu))/2))
 
             try:
                 ts = read_timeseries(db, j, column)
@@ -240,16 +245,18 @@ def calc_xbrain(template_db, db, timeseries):
 
             logger.debug('timeseries data: n_rois={}, n_timepoints={}'.format(ts.shape[0], ts.shape[1]))
             ts = zscore(ts)
-            n_roi = ts.shape[0]
 
             # take the mean of the template, excluding this sample if shared
             unique_idx = template_idx != subj
             template_mean = np.mean(template_ts[:, :, unique_idx], axis=2)
 
-            # diag of the intersubject corrs (upper right corner of matrix),
-            # this includes only the correlations between homologous regions
             try:
-                rs = np.diag(np.corrcoef(ts, y=template_mean)[n_roi:, :n_roi])
+                # diag of the intersubject corrs (upper right corner of matrix),
+                # this includes only the correlations between homologous regions
+                #rs = np.diag(np.corrcoef(ts, y=template_mean)[n_roi:, :n_roi])
+
+                # full xbrain connectivity matrix
+                rs = np.corrcoef(ts, y=template_mean)[n_roi:, :n_roi][idx_triu]
             except:
                 raise Exception('xcorr dimension missmatch: subject {} dims={}, timeseries={}, template dims={}'.format(j, ts.shape, column, template_mean.shape))
 
