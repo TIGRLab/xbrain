@@ -244,7 +244,7 @@ def estimate_biotypes(X, y, output):
     for n in range(n_best_clst):
         clst_centroids[n, :] = np.mean(X[clst_labels == n, :], axis=0)
 
-    logger.info('biotyping: found {} cannonical variates, {} n biotypes'.format(n_cc, n_best_clst))
+    logger.info('biotyping: found {} cannonical variates, {} n biotypes'.format(n_best_cc, n_best_clst))
 
     # save biotype information
     np.savez_compressed(os.path.join(output, 'xbrain_biotype.npz'),
@@ -268,7 +268,7 @@ def estimate_biotypes(X, y, output):
     plt.title('Calinski Harabaz scores')
     plt.ylabel('Variance Ratio Criterion')
     plt.xlabel('Number of Clusters (k)')
-    plt.xticks(range(len(cluster_tests)), cluster_tests)
+    plt.xticks(range(len(clst_tests)), clst_tests)
     plt.savefig(os.path.join(output, 'xbrain_n_cluster_estimation.pdf'))
     plt.close()
 
@@ -357,6 +357,7 @@ def fit_states(d_rs, states):
     Could be thought of as a measure of how much relative time this subject
     spent in each state during the scan.
     """
+    d_rs = utils.clean(d_rs)
     clf = LinearRegression()
     clf.fit(d_rs, states)
     return(np.sum(clf.coef_, axis=1))

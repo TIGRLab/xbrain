@@ -232,11 +232,10 @@ def main():
     y = utils.gather_columns(db, predict)
     y_raw = copy(y)
 
-    # biotype
+    # method: valid?
     if biotype:
         method = 'biotype'
 
-    # method: valid?
     methods = ['multiclass', 'target', 'ysplit', 'anomaly', 'biotype']
     if method not in methods:
         logger.error('method {} invalid, pick from {}'.format(method, methods))
@@ -334,16 +333,13 @@ def main():
                     logger.error('two template group {} not in y: {}'.format(two_template, np.unique(y)))
                     sys.exit(1)
 
-    # stores outputs
     # list of tuples [(train1, test1), (train2, test2), ... (trainN, testN)]
     acc, rec, prec, f1, auc = [], [], [], [], []
     # dict of lists containing the best hyperparameter found for each fold
     hp_dict = collections.defaultdict(list)
-    # holds the predictions on the test sets
-    y_predictions = np.zeros(len(db))
-    # holds the actual y values from the test sets
-    y_actual = np.zeros(len(db))
-    # text files for results
+    y_predictions = np.zeros(len(db)) # predictions from test sets
+    y_actual = np.zeros(len(db)) # 'actual' values from test sets
+
     csv_results = open(os.path.join(output, 'xbrain_results.csv'), 'wb')
     csv_results.writelines('k,accuracy_train,accuracy_test,recall_train,recall_test,precision_train,precision_test,f1_train,f1_test,auc_train,auc_test,n_features_retained\n')
     csv_hyper = open(os.path.join(output, 'xbrain_hyperparameters.csv'), 'wb')
@@ -371,23 +367,20 @@ def main():
             # biotype the full sample
             biotype_mdl = stats.estimate_biotypes(X_bio, y, output)
 
-    # stratified k-fold cross validation: split into train and test sets
-    logger.info('Outer Loop: {} fold cross validation'.format(k))
-
-    # if k > n_subjects, we set k == n_subjects for leave-one-out cross validation
     if k > len(db):
-        k = len(db)
+        k = len(db) # leave one out cross validation
 
     # for biotyping, we don't know who the groups are yet, so we can't stratify
     if method == 'biotype' or k == len(db):
+        logger.info('Outer Loop: {} fold cross validation'.format(k))
         kf = KFold(n_splits=k, shuffle=True)
     else:
+        logger.info('Outer Loop: {} fold stratified cross validation'.format(k))
         kf = StratifiedKFold(n_splits=k, shuffle=True)
 
     count = 1
     for train_idx, test_idx in kf.split(np.zeros(y.shape[0]), y):
 
-        # split the outcome variables into train and test groups
         y_train = y[train_idx]
         y_test = y[test_idx]
 
@@ -398,7 +391,6 @@ def main():
             y_train, y_test = stats.biotype(X_bio_train, X_bio_test, y_train, biotype_mdl)
 
             # add a column with the preprocessed y groups
-            #import IPython; IPython.embed()
             y_preprocessed_data = np.zeros(y.shape[0])
             y_preprocessed_data[train_idx] = y_train
             y_preprocessed_data[test_idx] = y_test
@@ -426,8 +418,8 @@ def main():
 
         # dynamic connectivity: calculate group-wise states from training data
         if dynamics:
-            # first, identify states for each group win_len=30, win_step=2
-            d_rs = corr.calc_dynamic_connectivity(db, dynamics, 30, 2)
+            # last two parameters: win_length, win_step (both in TRs)
+            d_rs = corr.calc_dynamic_connectivity(db, dynamics, 30, 4)
             groups = np.unique(y_train)
 
             for i, group in enumerate(groups):
@@ -450,8 +442,9 @@ def main():
                 else:
                     states = np.hstack((states, group_states))
 
-            # now regress each subject against the state vectors
+            # regress each subj against the states (clusters). X is beta coeffs
             for subj in np.arange(d_rs.shape[2]):
+                logger.debug('fitting states for subject {}'.format(subj))
                 coeffs = stats.fit_states(d_rs[:, :, subj], states)
                 if subj == 0:
                     X_dynamics = coeffs
@@ -476,19 +469,15 @@ def main():
             logger.error('X not defined: no suitable predictors specified')
             sys.exit(1)
 
-        # remove nonsense values from X
         X = utils.clean(X)
-
-        # split X into test and train groups
         X_train = X[train_idx, :]
         X_test  = X[test_idx, :]
 
-        # if desired, compress the feature matrix X
+        # maximum possible components is n_subjects in train, very aggressive
         if pct_variance:
             X_train, X_test = stats.pca_reduce(X_train, pct=pct_variance, X2=X_test)
 
         if diagnostics:
-            # run diagnostics on inputs, and exit
             if len(y_raw.shape) == 1:
                 y_raw = y_raw[train_idx]
             else:
