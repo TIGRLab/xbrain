@@ -83,7 +83,7 @@ def classify(X_train, X_test, y_train, y_test, method, output):
         #X_train = dim_mdl.transform(X_train)
         #X_test = dim_mdl.transform(X_test)
         #n_features = X_train.shape[1]
-        #corr.plot_X(X_train, output, title='test-vs-train', X2=X_test)
+        #plot_X(X_train, os.path.join(output, 'xbrain_X_test-vs-train.pdf'), X2=X_test)
         #logger.info('random forest retained {} features'.format(n_features))
 
         dim_mdl = LogisticRegression(penalty="l1", class_weight='balanced', n_jobs=6)
@@ -112,7 +112,6 @@ def classify(X_train, X_test, y_train, y_test, method, output):
     elif model == 'RIF':
         pct_outliers = len(np.where(y_train == -1)[0]) / float(len(y_train))
         clf_mdl = IsolationForest(n_jobs=6, n_estimators=1000, contamination=pct_outliers, max_samples=n_features)
-        clf_hp = {}
         scale_data = False
 
     if scale_data:
@@ -123,7 +122,7 @@ def classify(X_train, X_test, y_train, y_test, method, output):
     if method == 'anomaly':
         clf = clf_mdl
         clf.fit(X_train)
-        hp_dict = hyperparams
+        hp_dict = {'none': 'none'}
     else:
 
         logger.debug('Inner Loop: Classification using {}'.format(model))
@@ -211,8 +210,7 @@ def estimate_biotypes(X, y, output):
     logger.info('biotyping: cannonical correlation 10-fold cross validation to find brain-behaviour mappings')
 
     # small search space for testing
-    #regs = np.array(np.logspace(-4, 2, 10)) # regularization b/t 1e-4 and 1e2
-    regs = np.array(np.logspace(-4, 2, 3)) # regularization b/t 1e-4 and 1e2
+    regs = np.array(np.logspace(-4, 2, 10)) # regularization b/t 1e-4 and 1e2
     numCCs = np.arange(2, 11)
 
     cca = rcca.CCACrossValidate(numCCs=numCCs, regs=regs, verbose=True)
@@ -261,19 +259,9 @@ def estimate_biotypes(X, y, output):
                                               y=y)
     mdl = np.load(os.path.join(output, 'xbrain_biotype.npz'))
 
-    # plot biotype info
-    #D = squareform(pdist(comps))
-    sns.clustermap(comps, method='ward', metric='euclidean')
-    sns.plt.savefig(os.path.join(output, 'xbrain_component_clusters'))
-    sns.plt.close()
-
-    plt.plot(clst_score)
-    plt.title('Calinski Harabaz scores')
-    plt.ylabel('Variance Ratio Criterion')
-    plt.xlabel('Number of Clusters (k)')
-    plt.xticks(range(len(clst_tests)), clst_tests)
-    plt.savefig(os.path.join(output, 'xbrain_n_cluster_estimation.pdf'))
-    plt.close()
+    plot_biotype_clusters(comps, os.path.join(output, 'xbrain_biotype_clusters.pdf'))
+    plot_n_cluster_estimation(clst_score, clst_tests,
+        os.path.join(output, 'xbrain_biotype_n_cluster_estimation.pdf'))
 
     return mdl
 
@@ -387,7 +375,7 @@ def gauss(x, *p):
     return A*np.exp(-(x-mu)**2/(2.*sigma**2))
 
 
-def find_outliers(y):
+def find_outliers(y, output):
     """
     Assumes y is the mixture of scores drawn from a normal distribution and
     some unusual, unknown distribution. Fits a gaussian curve to y, and finds
@@ -419,12 +407,8 @@ def find_outliers(y):
     y_outliers[y > diff_cutoff] = 1
 
     logger.info('auto-partitioning y at the {}th percentile (non-gaussian outliers)'.format(diff_outliers_pct*100))
-
-    #fitted_curve = gauss(bin_centres, *coeff)
-    #plt.plot(bin_centres, binned_curve, color='k', label='y')
-    #plt.plot(bin_centres, fitted_curve, color='r', label='gaussian fit')
-    #plt.axvline(x=diff_cutoff, color='k', linestyle='--')
-    #plt.show()
+    plot_gauss_fit(bin_centres, binned_curve, diff_cutoff, coeff,
+        os.path.join(output, 'xbrain_y_outlier_fit.pdf'))
 
     return y_outliers
 
@@ -576,22 +560,6 @@ def individual_importances(X, Y):
     return V
 
 
-def pca_plot(X, y, plot):
-    """
-    Takes the top 3 PCs from the data matrix X, and plots them. y is used to
-    color code the data. No obvious grouping or clustering should be found. The
-    presence of such grouping suggests a strong site, sex, or similar effect.
-    """
-    clf = PCA(n_components=3)
-    clf = clf.fit(X)
-    X = clf.transform(X)
-    fig = plt.figure(1, figsize=(4, 3))
-    ax = Axes3D(fig, rect=[0, 0, .95, 1], elev=48, azim=134)
-    ax.scatter(X[:, 0], X[:, 1], X[:, 2], c=y, cmap=plt.cm.RdBu_r)
-    fig.savefig(os.path.join(plot, 'xbrain_X_PCs.pdf'))
-    plt.close()
-
-
 def pca_reduce(X, n=1, pct=0, X2=False):
     """
     Uses PCA to reduce the number of features in the input matrix X. n is
@@ -669,39 +637,6 @@ def make_classes(y, target_group):
     return(y, target_group)
 
 
-def cluster(X, plot, n_clust=2):
-    """
-    Plots a simple hierarchical clustering of the feature matrix X. Clustering
-    is done using Ward's algorithm. Variables in X are arranged by cluster.
-    """
-    fig = plt.figure()
-    axd = fig.add_axes([0.09,0.1,0.2,0.8])
-    axd.set_xticks([])
-    axd.set_yticks([])
-    link = sch.linkage(X, method='ward')
-    clst = sch.fcluster(link, n_clust, criterion='maxclust')
-    dend = sch.dendrogram(link, orientation='right')
-    idx = dend['leaves']
-    X = utils.reorder(X, idx, symm=False)
-    axm = fig.add_axes([0.3,0.1,0.6,0.8])
-    im = axm.matshow(X, aspect='auto', origin='lower', cmap=plt.cm.Reds, vmin=-0.5, vmax=0.5)
-    axm.set_xticks([])
-    axm.set_yticks([])
-    axc = fig.add_axes([0.91,0.1,0.02,0.8])
-    plt.colorbar(im, cax=axc)
-    plt.savefig(os.path.join(plot, 'xbrain_clusters.pdf'))
-    plt.close()
-
-    return clst
-
-
-def distributions(y, plot):
-    """Plots data distribution of y."""
-    sns.distplot(y, hist=False, rug=True, color="r")
-    sns.plt.savefig(plot)
-    sns.plt.close()
-
-
 def diagnostics(X_train, X_test, y_train, y_test, y_train_raw, output):
     """
     A pipeline for assessing the inputs to the classifier. Runs on
@@ -725,16 +660,19 @@ def diagnostics(X_train, X_test, y_train, y_test, y_train_raw, output):
         y_1d = copy(y_train_raw)
 
     # plot the y variable (1d) before generating classes
-    distributions(y_1d.T, os.path.join(output, 'xbrain_y_dist.pdf'))
+    plot_distributions(y_1d.T, os.path.join(output, 'xbrain_y_dist.pdf'))
+
+    # plots X_train and X_test (should have similar distributions)
+    plot_distributions(X_train, os.path.join(output, 'xbrain_y_dist.pdf'), X2=X_test)
 
     # print the top 3 PCs of X, colour coding by y group (is X trivially seperable?)
-    pca_plot(X_train, y_train, output)
+    plot_pcs(X_train, y_train, os.path.join(output, 'xbrain_X_PCs.pdf'))
 
     np.save(os.path.join(output, 'xbrain_y.npy'), y_1d)
     np.save(os.path.join(output, 'xbrain_X.npy'), X_train)
 
     # plot a hierarchical clustering of the feature matrix X
-    clst = cluster(X_train, output)
+    plot_clusters(X_train, os.path.join(output, 'xbrain_X_clusters.pdf'))
 
     # use MDMR to find a relationship between the X matrix and all y predictors
     # broken -- need to go over matrix transpositions...
@@ -770,5 +708,108 @@ def diagnostics(X_train, X_test, y_train, y_test, y_train_raw, output):
     plt.savefig(os.path.join(output, 'xbrain_overfit-analysis.pdf'))
 
     sys.exit()
+
+
+def plot_pcs(X, y, output):
+    """
+    Takes the top 3 PCs from the data matrix X, and plots them. y is used to
+    color code the data. No obvious grouping or clustering should be found. The
+    presence of such grouping suggests a strong site, sex, or similar effect.
+    """
+    clf = PCA(n_components=3)
+    X = clf.fit_transform(X)
+    fig = plt.figure(1, figsize=(4, 3))
+    ax = Axes3D(fig, rect=[0, 0, .95, 1], elev=48, azim=134)
+    ax.scatter(X[:, 0], X[:, 1], X[:, 2], c=y, cmap=plt.cm.RdBu_r)
+    fig.savefig(output)
+    plt.close()
+
+
+def plot_X(X, output, X2=None):
+    """
+    Plots the cross brain correlation features calculated. Can be used to
+    compare features (e.g., hi vs low template, or train vs test matricies) if
+    X2 is defined. Negative correlations are nonsense for cross brain
+    correlations, and are set to 0 for visualization.
+    """
+    if not os.path.isdir(path):
+        raise Exception('path {} is not a directory'.format(path))
+
+    if X2 is not None:
+        X = np.vstack((np.vstack((X, np.ones(X.shape[1]))), X2))
+
+    plt.imshow(X, vmin=-0.5, vmax=0.5, cmap=plt.cm.RdBu_r, interpolation='nearest')
+    plt.colorbar()
+
+    if X2 is not None:
+        plt.title('X vs X2 feature matricies')
+    else:
+        plt.title('X feature matrix')
+
+    plt.savefig(output)
+    plt.close()
+
+
+def plot_distributions(X, output, X2=None):
+    """
+    Plots data distribution of input matrix X. If X2 is defined, constrast the
+    distributions of the two matrices.
+    """
+    sns.distplot(np.ravel(X), hist=False, rug=True, color="r")
+    if X2 is not None:
+        sns.distplot(np.ravel(X2), hist=False, rug=True, color="b")
+    sns.plt.savefig(output)
+    sns.plt.close()
+
+
+def plot_clusters(X, output):
+    """
+    Plots a simple hierarchical clustering of the feature matrix X. Clustering
+    is done using Ward's algorithm. Variables in X are arranged by cluster.
+    """
+    fig = plt.figure()
+    axd = fig.add_axes([0.09,0.1,0.2,0.8])
+    axd.set_xticks([])
+    axd.set_yticks([])
+    link = sch.linkage(X, method='ward')
+    dend = sch.dendrogram(link, orientation='right')
+    idx = dend['leaves']
+    X = utils.reorder(X, idx, symm=False)
+    axm = fig.add_axes([0.3,0.1,0.6,0.8])
+    im = axm.matshow(X, aspect='auto', origin='lower', cmap=plt.cm.Reds, vmin=-0.5, vmax=0.5)
+    axm.set_xticks([])
+    axm.set_yticks([])
+    axc = fig.add_axes([0.91,0.1,0.02,0.8])
+    plt.colorbar(im, cax=axc)
+    plt.savefig(output)
+    plt.close()
+
+
+def plot_biotype_clusters(comps, output):
+    """Uses hierarchical clustering (ward's method) to show biotypes"""
+    sns.clustermap(comps, method='ward', metric='euclidean')
+    sns.plt.savefig(output)
+    sns.plt.close()
+
+
+def plot_n_cluster_estimation(clst_score, clst_tests, output):
+    """Plots the cluster goodness score against the number of clusters"""
+    plt.plot(clst_score)
+    plt.title('Calinski Harabaz scores')
+    plt.ylabel('Variance Ratio Criterion')
+    plt.xlabel('Number of Clusters (k)')
+    plt.xticks(range(len(clst_tests)), clst_tests)
+    plt.savefig(output)
+    plt.close()
+
+
+def plot_gauss_fit(bin_centres, binned_curve, diff_cutoff, coeff, output):
+    """plots a fit of a gaussian curve to the empirical data"""
+    fitted_curve = gauss(bin_centres, *coeff)
+    plt.plot(bin_centres, binned_curve, color='k', label='y')
+    plt.plot(bin_centres, fitted_curve, color='r', label='gaussian fit')
+    plt.axvline(x=diff_cutoff, color='k', linestyle='--')
+    plt.savefig(output)
+    plt.close()
 
 

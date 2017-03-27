@@ -7,9 +7,6 @@ import numpy as np
 import pandas as pd
 from scipy.stats.stats import pearsonr
 from scipy.signal import medfilt
-import matplotlib
-matplotlib.use('Agg')   # Force matplotlib to not use any Xwindows backend
-import matplotlib.pyplot as plt
 
 logger = logging.getLogger(__name__)
 
@@ -310,28 +307,4 @@ def find_template(db, y, timeseries, group=-1):
     else:
         return(db)
 
-
-def plot_X(X, path, title='features', X2=None):
-    """
-    Plots the cross brain correlation features calculated. Can be used to
-    compare features (e.g., hi vs low template, or train vs test matricies) if
-    X2 is defined. Negative correlations are nonsense for cross brain
-    correlations, and are set to 0 for visualization.
-    """
-    if not os.path.isdir(path):
-        raise Exception('path {} is not a directory'.format(path))
-
-    if X2 is not None:
-        X = np.vstack((np.vstack((X, np.ones(X.shape[1]))), X2))
-
-    plt.imshow(X, vmin=-0.5, vmax=0.5, cmap=plt.cm.RdBu_r, interpolation='nearest')
-    plt.colorbar()
-
-    if X2 is not None:
-        plt.title('X (Reds) vs X2 (Blues)')
-    else:
-        plt.title('X (Reds)')
-
-    plt.savefig(os.path.join(path, 'xbrain_X_{}.pdf'.format(title)))
-    plt.close()
 

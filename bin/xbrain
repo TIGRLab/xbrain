@@ -293,7 +293,7 @@ def main():
             if y_cutoff == 'auto':
                 # automatically determine values that fall outside of the normal
                 # range by fitting a gaussian to y and looking for extreme values
-                y = stats.find_outliers(y)
+                y = stats.find_outliers(y, output)
             else:
                 # split y at a pre-defined percentile
                 y = utils.make_dv_groups(y, y_cutoff)
@@ -301,7 +301,7 @@ def main():
         if method == 'anomaly':
             # automatically determine values that fall outside of the normal
             # range by fitting a gaussian to y and looking for extreme values
-            y = stats.find_outliers(y)
+            y = stats.find_outliers(y, output)
         else:
             # split y at a pre-defined percentile
             y, target_group = stats.make_classes(y, target_group)
@@ -355,6 +355,7 @@ def main():
     if biotype:
         # collect the connectivity features for biotyping
         X_bio = corr.calc_connectivity(db, biotype)
+        X_bio = utils.clean(X_bio)
         if biotype_mdl:
             # load the results of a previous run
             try:
@@ -434,6 +435,9 @@ def main():
                 d_rs_group = d_rs_group.reshape(n_rois, n_windows*n_subj)
 
                 # use k means clustering to compute centroids (rois x states)
+                # nb if we get errors here, will need to seperately set 0s and infs.
+                d_rs_group[np.isnan(d_rs_group)] = 0
+                d_rs_group[np.isinf(d_rs_group)] = 0
                 group_states = stats.get_states(d_rs_group, k=5)
 
                 # combine states between groups
