@@ -149,6 +149,7 @@ import xbrain.stats as stats
 logging.basicConfig(level=logging.WARN, format="[%(name)s] %(levelname)s: %(message)s")
 logger = logging.getLogger(os.path.basename(__file__))
 
+diagnostics = False
 
 def parse_results(results):
     """Parses results vector and returns mean & sem for test & train"""
@@ -159,7 +160,14 @@ def parse_results(results):
     return(train_mean, test_mean, train_sem, test_sem)
 
 
+def writer(csv, string):
+    if not diagnostics:
+        csv.writelines(string)
+
 def main():
+
+    global diagnostics
+
     arguments = docopt(__doc__)
     database      = arguments['<database>']
     xcorr         = arguments['--xcorr']
@@ -203,9 +211,10 @@ def main():
     else:
         output = os.path.expanduser('~')
 
-    csv_info = open(os.path.join(output, 'xbrain_information.csv'), 'wb')
-    csv_info.writelines('xbrain run with the following inputs\n  statmaps={}\n  xcorr={}\n  connectivity={}\n  dynamics={}\n  raw={}\n  predict={}\n'.format(
-                         statmaps, xcorr, connectivity, dynamics, raw, predict))
+    if not diagnostics:
+        csv_info = open(os.path.join(output, 'xbrain_information.csv'), 'wb')
+    writer(csv_info, 'xbrain run with the following inputs\n  statmaps={}\n  xcorr={}\n  connectivity={}\n  dynamics={}\n  raw={}\n  predict={}\n'.format(
+            statmaps, xcorr, connectivity, dynamics, raw, predict))
 
     # gather and reduce database to specified columns
     statmaps = utils.split_columns(statmaps)
@@ -226,7 +235,7 @@ def main():
     n_pre = len(db)
     db = db.dropna(axis=0)
     logger.info('database cols: {}, rows remaining after clean: {}/{}'.format(columns, len(db), n_pre))
-    csv_info.writelines('options:\n  n={}\n  k={}\n'.format(len(db), k))
+    writer(csv_info, 'options:\n  n={}\n  k={}\n'.format(len(db), k))
 
     logger.debug('generating dependent variable vector y')
     y = utils.gather_columns(db, predict)
@@ -240,7 +249,7 @@ def main():
     if method not in methods:
         logger.error('method {} invalid, pick from {}'.format(method, methods))
         sys.exit(1)
-    csv_info.writelines('  method={}\n'.format(method))
+    writer(csv_info, '  method={}\n'.format(method))
 
     # y_cutoff: percentile?
     if method == 'ysplit' and y_cutoff != 'auto':
@@ -248,7 +257,7 @@ def main():
         if not utils.is_probability(y_cutoff):
             logger.error('ysplit: target_cutoff percentile {} invalid, should be [0-1] or "auto"'.format(y_cutoff))
             sys.exit(1)
-        csv_info.writelines('  y-cutoff={}\n'.format(y_cutoff))
+        writer(csv_info, '  y-cutoff={}\n'.format(y_cutoff))
 
     # target_group: valid?
     if method == 'ysplit':
@@ -260,7 +269,7 @@ def main():
             logger.error('target_group must be defined for "multiclass", "target", and "biotype"  modes when calculating xcorr')
             sys.exit(1)
     if target_group:
-        csv_info.writelines('  target-group={}\n'.format(target_group))
+        writer(csv_info, '  target-group={}\n'.format(target_group))
 
     # two_template: valid?
     if method == 'anomaly' and two_template:
@@ -271,15 +280,14 @@ def main():
         if two_template == target_group:
             logger.error('two_template group {} should be different than the target group {}'.format(two_template, target_group))
             sys.exit(1)
-        csv_info.writelines('  target-group={}\n'.format(target_group))
+        writer(csv_info, '  target-group={}\n'.format(target_group))
 
     # pct_variance: valid?
     if pct_variance:
         pct_variance = float(pct_variance)
         if not utils.is_probability(pct_variance):
             logger.error('pct variance retained {} invalid, should be (0-1)'.format(pct_variance))
-        csv_info.writelines('  pct-variance={}\n'.format(pct_variance))
-
+        writer(csv_info, '  pct-variance={}\n'.format(pct_variance))
     csv_info.close()
 
     # preprocess y in prep for classification experiments
@@ -340,9 +348,10 @@ def main():
     y_predictions = np.zeros(len(db)) # predictions from test sets
     y_actual = np.zeros(len(db)) # 'actual' values from test sets
 
-    csv_results = open(os.path.join(output, 'xbrain_results.csv'), 'wb')
-    csv_results.writelines('k,accuracy_train,accuracy_test,recall_train,recall_test,precision_train,precision_test,f1_train,f1_test,auc_train,auc_test,n_features_retained\n')
-    csv_hyper = open(os.path.join(output, 'xbrain_hyperparameters.csv'), 'wb')
+    if not diagnostics:
+        csv_results = open(os.path.join(output, 'xbrain_results.csv'), 'wb')
+        csv_hyper = open(os.path.join(output, 'xbrain_hyperparameters.csv'), 'wb')
+    writer(csv_results, 'k,accuracy_train,accuracy_test,recall_train,recall_test,precision_train,precision_test,f1_train,f1_test,auc_train,auc_test,n_features_retained\n')
 
     # static connectivity: outside k-fold b/c no info shared between samples
     if connectivity:
@@ -506,21 +515,21 @@ def main():
         y_predictions[test_idx] = results['X_test_pred']
         y_actual[test_idx] = y_test
 
-        csv_results.writelines('{},{},{},{},{},{},{},{},{},{},{},{}\n'.format(
-                                count,
-                                results['accuracy'][0],results['accuracy'][1],
-                                results['recall'][0], results['recall'][1],
-                                results['precision'][0], results['precision'][1],
-                                results['f1'][0], results['f1'][1],
-                                results['auc'][0], results['auc'][1],
-                                results['n_features_retained']))
+        writer(csv_results, '{},{},{},{},{},{},{},{},{},{},{},{}\n'.format(
+            count,
+            results['accuracy'][0],results['accuracy'][1],
+            results['recall'][0], results['recall'][1],
+            results['precision'][0], results['precision'][1],
+            results['f1'][0], results['f1'][1],
+            results['auc'][0], results['auc'][1],
+            results['n_features_retained']))
         count += 1
 
         # collects the relevant hyperparameters for the chosen model
         hp_tmp = results['hp_dict']
         for hp in hp_tmp.keys():
             hp_dict[hp].append(hp_tmp[hp])
-        csv_hyper.writelines(hp_dict)
+        writer(csv_hyper, str(hp_dict))
 
     # hyperparameters found during inner loop cross validation
     hp_final = {}
@@ -532,7 +541,7 @@ def main():
             # continuous / integet hyperparameters, take median
             hp_final[hp] = np.median(hp_dict[hp][0])
     logger.info('final hyperparameters:\n{}'.format(hp_final))
-    csv_hyper.writelines(hp_final)
+    writer(csv_hyper, str(hp_final))
     csv_hyper.close()
 
     # store predictions, actual values, in reduced database
@@ -547,21 +556,21 @@ def main():
     f1_train_mean, f1_test_mean, f1_train_sem, f1_test_sem = parse_results(f1)
     auc_train_mean, auc_test_mean, auc_train_sem, auc_test_sem = parse_results(auc)
 
-    csv_results.writelines('mean,{},{},{},{},{},{},{},{},{},{},{}\n'.format(
-                            acc_train_mean, acc_test_mean,
-                            rec_train_mean, rec_test_mean,
-                            prec_train_mean, prec_test_mean,
-                            f1_train_mean, f1_test_mean,
-                            auc_train_mean, auc_test_mean,
-                            'n/a'))
+    writer(csv_results, 'mean,{},{},{},{},{},{},{},{},{},{},{}\n'.format(
+        acc_train_mean, acc_test_mean,
+        rec_train_mean, rec_test_mean,
+        prec_train_mean, prec_test_mean,
+        f1_train_mean, f1_test_mean,
+        auc_train_mean, auc_test_mean,
+        'n/a'))
 
-    csv_results.writelines('sem,{},{},{},{},{},{},{},{},{},{},{}'.format(
-                            acc_train_sem, acc_test_sem,
-                            rec_train_sem, rec_test_sem,
-                            prec_train_sem, prec_test_sem,
-                            f1_train_sem, f1_test_sem,
-                            auc_train_sem, auc_test_sem,
-                            'n/a'))
+    writer(csv_results, 'sem,{},{},{},{},{},{},{},{},{},{},{}'.format(
+        acc_train_sem, acc_test_sem,
+        rec_train_sem, rec_test_sem,
+        prec_train_sem, prec_test_sem,
+        f1_train_sem, f1_test_sem,
+        auc_train_sem, auc_test_sem,
+        'n/a'))
     csv_results.close()
 
     logger.info('train results:\n  acc={}+/-{}\n  f1={}+/-{}\n  auc={}+/-{}'.format(
