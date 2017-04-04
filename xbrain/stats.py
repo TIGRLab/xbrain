@@ -11,7 +11,7 @@ import re
 
 import numpy as np
 from scipy import linalg
-from scipy.optimize import curve_fit
+from scipy.optimize import curve_fit, linear_sum_assignment
 from scipy.stats import lognorm, randint, uniform, mode, spearmanr
 import scipy.cluster.hierarchy as sch
 from scipy.spatial.distance import pdist, squareform
@@ -26,6 +26,7 @@ from sklearn.ensemble import RandomForestClassifier, IsolationForest
 from sklearn.metrics import confusion_matrix, accuracy_score, recall_score, precision_score, f1_score, roc_auc_score, calinski_harabaz_score, silhouette_score
 from sklearn.cluster import AgglomerativeClustering, MiniBatchKMeans
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+from sklearn.feature_selection import VarianceThreshold, SelectKBest, mutual_info_classif
 
 import matplotlib
 matplotlib.use('Agg')   # Force matplotlib to not use any Xwindows backend
@@ -73,26 +74,7 @@ def classify(X_train, X_test, y_train, y_test, method, output):
         scoring = 'f1_macro'
         model = 'SVC'
 
-    # use random forest for feature selection if we have 10x more features than samples
-    if X_train.shape[1] > X_train.shape[0]*10:
-        #logger.info('using random forest for feature selection since features={} > samples={}*10'.format(X_train.shape[1], X_train.shape[0]))
-        #dim_mdl = SelectFromModel(
-        #              RandomForestClassifier(n_jobs=6, class_weight='balanced',
-        #                  n_estimators=2000, max_depth=2, min_samples_split=3))
-        #dim_mdl.fit(X_train, y_train)
-        #X_train = dim_mdl.transform(X_train)
-        #X_test = dim_mdl.transform(X_test)
-        #n_features = X_train.shape[1]
-        #plot_X(X_train, os.path.join(output, 'xbrain_X_test-vs-train.pdf'), X2=X_test)
-        #logger.info('random forest retained {} features'.format(n_features))
-
-        dim_mdl = LogisticRegression(penalty="l1", class_weight='balanced', n_jobs=6)
-        dim_hp = {'C': uniform(0.01, 100)}
-        logger.debug('Inner Loop: Logistic Regression w/ l1 penalty for feature selection')
-        dim_mdl = RandomizedSearchCV(dim_mdl, dim_hp, n_iter=100, scoring=scoring, verbose=1)
-        dim_mdl.fit(X_train, y_train)
-        X_train = dim_mdl.transform(X_train)
-        X_test = dim_mdl.transform(X_test)
+    plot_X(X_train, os.path.join(output, 'xbrain_X_test-vs-train.pdf'), X2=X_test)
 
     # settings for the classifier
     if model == 'Logistic':
@@ -152,8 +134,12 @@ def classify(X_train, X_test, y_train, y_test, method, output):
     # transforms labels to label indicator format, needed for multiclass
     lb = LabelBinarizer()
     lb.fit(y_train)
-    auc = (roc_auc_score(lb.transform(y_train), lb.transform(X_train_pred), average='macro'),
-           roc_auc_score(lb.transform(y_test), lb.transform(X_test_pred), average='macro'))
+    # AUC only works if there is more than one class in y
+    if len(np.unique(y_test)) > 1:
+        auc = (roc_auc_score(lb.transform(y_train), lb.transform(X_train_pred), average='macro'),
+               roc_auc_score(lb.transform(y_test), lb.transform(X_test_pred), average='macro'))
+    else:
+        auc = (0, 0)
 
     logger.info('TRAIN: confusion matrix\n{}'.format(confusion_matrix(y_train, X_train_pred)))
     logger.info('TEST:  confusion matrix\n{}'.format(confusion_matrix(y_test, X_test_pred)))
@@ -172,6 +158,186 @@ def classify(X_train, X_test, y_train, y_test, method, output):
             'X_test_pred': X_test_pred,
             'n_features_retained': n_features,
             'hp_dict': hp_dict}
+
+
+def feature_select(X_train, y_train, X_test, p=0.25):
+
+    # prune features with 0 variance
+    n_before = X_train.shape[1]
+    sel = VarianceThreshold()
+    sel.fit(X_train)
+    X_train = sel.transform(X_train)
+    X_test = sel.transform(X_test)
+    logger.debug('retained {}/{} features with non-zero variance'.format(X_train.shape[1], n_before))
+
+    #sel = VarianceThreshold(threshold=np.mean(np.var(X_train, axis=0)))
+    #sel.fit(X_train)
+    #X_train = sel.transform(X_train)
+    #X_test = sel.transform(X_test)
+    #logger.debug('retained {}/{} features with above-average variance'.format(X_train.shape[1], n_before))
+
+    #n_before = X_train.shape[1]
+    #sel = SelectKBest(mutual_info_classif, k=X_train.shape[0])
+    #sel.fit(X_train, y_train)
+    #X_train = sel.transform(X_train)
+    #X_test = sel.transform(X_test)
+    #logger.debug('retained {}/{} features using recursive feature selection (mutual information)'.format(X_train.shape[1], n_before))
+
+    # use random forest for feature selection using shallow trees. Inspired by
+    # "Variable selection using Random Forests" Genuer R et al. 2012.
+    n_before = X_train.shape[1]
+    logger.info('random forest feature selection: features={}, samples={}'.format(
+        X_train.shape[1], X_train.shape[0]))
+
+    # minimum number of samples in a node that can be split
+    # larger values = shallower trees
+    mtry = int(round(X_train.shape[1] * 0.33))
+    n_trees = 5000
+    test = 0
+    while test == 0:
+        logger.info('training random forest with n_trees={}, mtry={}'.format(
+            n_trees, mtry))
+        dim_mdl = SelectFromModel(
+                      RandomForestClassifier(n_jobs=6, class_weight='balanced',
+                          n_estimators=n_trees, min_samples_split=mtry))
+        dim_mdl.threshold = 0
+        dim_mdl.fit(X_train, y_train)
+
+        # if this isnt 0, at least one of the features has some importance
+        test = np.mean(dim_mdl.estimator_.feature_importances_)
+        mtry = int(round(mtry * 0.8)) # reduce number of features required to split a node
+
+    # n_features is set to be approximately p*number_of_samples iteratively
+    n_features = dim_mdl.transform(X_train).shape[1]
+    target_features = np.round(X_train.shape[0] * p)
+    increment = np.mean(dim_mdl.estimator_.feature_importances_) * 0.1
+    while n_features > target_features:
+        dim_mdl.threshold += increment
+        n_features = dim_mdl.transform(X_train).shape[1]
+        logger.debug('{} features selected with threshold {}, target={}'.format(
+            n_features, dim_mdl.threshold, target_features))
+
+    X_train = dim_mdl.transform(X_train)
+    X_test = dim_mdl.transform(X_test)
+
+    logger.info('random forest retained {}/{} features'.format(n_features, n_before))
+
+    #dim_mdl = LogisticRegression(penalty="l1", class_weight='balanced', n_jobs=6)
+    #dim_hp = {'C': uniform(0.01, 100)}
+    #logger.debug('Inner Loop: Logistic Regression w/ l1 penalty for feature selection')
+    #dim_mdl = RandomizedSearchCV(dim_mdl, dim_hp, n_iter=100, scoring=scoring, verbose=1)
+    #dim_mdl.fit(X_train, y_train)
+    #X_train = dim_mdl.transform(X_train)
+    #X_test = dim_mdl.transform(X_test)
+
+    return X_train, X_test
+
+
+def match_labels(a, b):
+    """
+    Returns mappins from a to b that minimizes the distance between the input
+    label vectors. Inputs must be the same length. The unique values from a + b
+    are appended to a + b to ensure that both vectors contain all unique values.
+
+    For details see section 2 of Lange T et al. 2004.
+
+    E.g,
+    a = [1,1,2,3,3,4,4,4,2]
+    b = [2,2,3,1,1,4,4,4,3]
+    optimal: 1 -> 2; 2 -> 3; 3 -> 1; 4 -> 4
+    returns:
+        1 2
+        2 3
+        3 1
+        4 4
+
+    Inspired by http://things-about-r.tumblr.com/post/36087795708/matching-clustering-solutions-using-the-hungarian
+    """
+    if len(a) != len(b):
+        raise ValueError('length of a & b must be equal')
+
+    ids_a = np.unique(a)
+    ids_b = np.unique(b)
+
+    # in some cases, a and b do not have the same number of unique entries. This
+    # can happen if one of the two are predicted labels, and the data they were
+    # predicted from had some very small classes which constitute outliers, and
+    # are not predicted in the held out data. D should still contain an entry
+    # for this unlikely class, and our mapping should account for it. To
+    # facilitate this, we append all unique values from both a and b to each, so
+    # a and b are garunteed to have at least one entry from all unique values
+    n = max(len(ids_a), len(ids_b)) # may not be equal
+    D = np.zeros((n, n)) # distance matrix
+    a = np.hstack((np.hstack((a, ids_a)), ids_b)) # ensures no missing values
+    b = np.hstack((np.hstack((b, ids_a)), ids_b)) #
+
+    # constructs the distance matrix between a and b with appended values
+    for x in np.arange(n):
+        for y in np.arange(n):
+            idx_a = np.where(a == x)[0]
+            idx_b = np.where(b == y)[0]
+            n_int = len(np.intersect1d(idx_a, idx_b))
+            # distance = (# in cluster) - 2*sum(# in intersection)
+            D[x,y] = (len(idx_a) + len(idx_b) - 2*n_int)
+
+    # permute labels w/ minimum weighted bipartite matching (hungarian method)
+    idx_D_x, idx_D_y = linear_sum_assignment(D)
+    mappings = np.hstack((np.atleast_2d(idx_D_x).T, np.atleast_2d(idx_D_y).T))
+
+    return(mappings)
+
+
+def cluster_stability(X, k, n=100):
+    """
+    Estimates the stability of a given clustering solution (k) by iteratively
+    clustering half of the dataset without replacement, and training a
+    classifier to propogate these clusters to the held-out data. The agreement
+    between these propogated labels and the labels found via clustering is
+    reported as the stability (averaged over n iterations).
+
+    See Stability-based validation of clustering solutions. Lange T et al. 2004.
+    """
+    # store the stability measures for each iteration
+    stabilities = np.empty(n)
+    stabilities[:] = np.nan
+
+    # hierarchical clustering: ward's method, euclidean distance
+    clst = AgglomerativeClustering(n_clusters=k)
+
+    for i in np.arange(n):
+        # split data into two random samples
+        idx = np.random.permutation(np.arange(X.shape[0]))
+        idxa = idx[1:len(idx)/2]
+        idxb = idx[len(idx)/2:]
+        Xa = X[idxa, :]
+        Xb = X[idxb, :]
+
+        # cluster each split
+        clst.fit(Xa)
+        ya = clst.labels_
+        clst.fit(Xb)
+        yb = clst.labels_
+
+        # use LDA mapping learned on Xa to predict labels of Xb
+        yp = project_labels(Xa, ya, Xb)
+
+        # map yp to match yb, then compute distance
+        mappings = match_labels(yp, yb)
+        yp_out = np.zeros(len(yp))
+
+        for c in np.arange(k):
+            idx_map = np.where(yp == c)
+            try:
+                yp_out[idx_map] = mappings[c, 1]
+            except:
+                print('c={}, mappings: {}'.format(c, mappings.shape))
+                import IPython; IPython.embed()
+
+        stabilities[i] = 1 - pdist(np.vstack((yp_out, yb)), metric='hamming')
+
+    stability = np.nanmean(stabilities) / k # normalize for number of clusters
+
+    return stability
 
 
 def estimate_biotypes(X, y, output):
@@ -209,9 +375,10 @@ def estimate_biotypes(X, y, output):
     # use regularized CCA to determine the optimal number of cannonical variates
     logger.info('biotyping: cannonical correlation 10-fold cross validation to find brain-behaviour mappings')
 
-    # small search space for testing
-    regs = np.array(np.logspace(-4, 2, 10)) # regularization b/t 1e-4 and 1e2
-    numCCs = np.arange(2, 11)
+    #regs = np.array(np.logspace(-4, 2, 10)) # regularization b/t 1e-4 and 1e2
+    regs = np.array(np.logspace(1, 6, 2))
+    #numCCs = np.arange(2, 11)
+    numCCs = np.arange(2, 4)
 
     cca = rcca.CCACrossValidate(numCCs=numCCs, regs=regs, verbose=True)
     cca.train([X, y])
@@ -225,14 +392,15 @@ def estimate_biotypes(X, y, output):
     clst_tests = np.array(range(2,20))
     for i, n_clst in enumerate(clst_tests):
         # ward's method, euclidean distance
-        clst = AgglomerativeClustering(n_clusters=n_clst)
-        clst.fit(comps)
+        #clst = AgglomerativeClustering(n_clusters=n_clst)
+        #clst.fit(comps)
 
         # CH score gives me a very large number of clusters -- not sure which
         # to use ATM so sticking with the one that gives me a small number ...
         # should revisit when I test with many more y features
         #clst_score[i] = calinski_harabaz_score(comps, clst.labels_)
-        clst_score[i] = silhouette_score(comps, clst.labels_)
+        #clst_score[i] = silhouette_score(comps, clst.labels_)
+        clst_score[i] = cluster_stability(comps, n_clst)
 
     # take the best performing clustering
     n_best_clst = clst_tests[clst_score == np.max(clst_score)][0]
@@ -264,6 +432,13 @@ def estimate_biotypes(X, y, output):
         os.path.join(output, 'xbrain_biotype_n_cluster_estimation.pdf'))
 
     return mdl
+
+
+def project_labels(X_train, y_train, X_test):
+    """projects labels onto test set from an LDA mapping from training data"""
+    lda = LinearDiscriminantAnalysis()
+    lda.fit(X_train, y_train)
+    return(lda.predict(X_test))
 
 
 def biotype(X_train, X_test, y_train, mdl):
@@ -318,9 +493,7 @@ def biotype(X_train, X_test, y_train, mdl):
     y_train = clst.labels_
 
     # use LDA to predict the labels of the test set, y_test
-    lda = LinearDiscriminantAnalysis()
-    lda.fit(X_train_red, y_train)
-    y_test = lda.predict(X_test_red)
+    y_test = project_labels(X_train_red, y_train, X_test_red)
 
     return y_train, y_test
 
@@ -636,6 +809,16 @@ def make_classes(y, target_group):
 
     return(y, target_group)
 
+def covary(X, X_cov):
+    """
+    For each column in X, fits all covariates in X_cov, and keeps the residuals.
+    """
+    clf = LinearRegression()
+    clf.fit(X, X_cov)
+    for i in range(clf.coef_.shape[0]):
+        X -= clf.coef_[i,:] * X
+
+    return X
 
 def diagnostics(X_train, X_test, y_train, y_test, y_train_raw, output):
     """
@@ -652,26 +835,27 @@ def diagnostics(X_train, X_test, y_train, y_test, y_train_raw, output):
     + Runs iterative classification of the training data using logistic
       regression and l1 regularization with varying levels of C.
     """
-    logger.info('pre-test: detecting gross relationship between neural and cognitive data')
-    # compress y to a single vector using PCA if required
+    logger.info('running diagnostics on neural and cognitive data')
+    logger.debug('compressing y to 1d')
     if len(y_train_raw.shape) == 2 and y_train_raw.shape[0] > 1:
         y_1d = copy(pca_reduce(y_train_raw))
     else:
         y_1d = copy(y_train_raw)
 
-    # plot the y variable (1d) before generating classes
+    logger.debug('plotting y (1d) before generating classes')
     plot_distributions(y_1d.T, os.path.join(output, 'xbrain_y_dist.pdf'))
 
-    # plots X_train and X_test (should have similar distributions)
-    plot_distributions(X_train, os.path.join(output, 'xbrain_y_dist.pdf'), X2=X_test)
+    logger.debug('plotting X_train and X_test distributions')
+    plot_distributions(X_train, os.path.join(output, 'xbrain_X_dist.pdf'), X2=X_test)
 
-    # print the top 3 PCs of X, colour coding by y group (is X trivially seperable?)
+    logger.debug('printing top 3 PCs of X, colour coding by y group')
     plot_pcs(X_train, y_train, os.path.join(output, 'xbrain_X_PCs.pdf'))
 
+    logger.debug('saving copies of X and y')
     np.save(os.path.join(output, 'xbrain_y.npy'), y_1d)
     np.save(os.path.join(output, 'xbrain_X.npy'), X_train)
 
-    # plot a hierarchical clustering of the feature matrix X
+    logger.debug('plotting hierarchical clustering of the feature matrix X')
     plot_clusters(X_train, os.path.join(output, 'xbrain_X_clusters.pdf'))
 
     # use MDMR to find a relationship between the X matrix and all y predictors
@@ -683,10 +867,11 @@ def diagnostics(X_train, X_test, y_train, y_test, y_train_raw, output):
     #else:
     #    logger.warn('mdmr: no relationship detected, variance explained={}'.format(v))
 
-    # sparsity test over a range of C values
+    logger.debug('overfitting tests over range of sparsities, logistic regression')
     Cs = powers(2, np.arange(-7, 7, 0.5))
     features, train_score, test_score = [], [], []
-    for C in Cs:
+    for i, C in enumerate(Cs):
+        logger.debug('testing C={}, test={}/{}'.format(C, i+1, len(Cs)))
         # fit a logistic regression model with l1 penalty (for sparsity)
         mdl = LogisticRegression(n_jobs=6, class_weight='balanced', penalty='l1', C=C)
         mdl.fit(X_train, y_train)
@@ -732,9 +917,6 @@ def plot_X(X, output, X2=None):
     X2 is defined. Negative correlations are nonsense for cross brain
     correlations, and are set to 0 for visualization.
     """
-    if not os.path.isdir(path):
-        raise Exception('path {} is not a directory'.format(path))
-
     if X2 is not None:
         X = np.vstack((np.vstack((X, np.ones(X.shape[1]))), X2))
 
@@ -755,9 +937,14 @@ def plot_distributions(X, output, X2=None):
     Plots data distribution of input matrix X. If X2 is defined, constrast the
     distributions of the two matrices.
     """
-    sns.distplot(np.ravel(X), hist=False, rug=True, color="r")
+    # rug plots take forever if there are too many data points
+    if len(np.ravel(X)) < 1000:
+        rug = True
+    else:
+        rug = False
+    sns.distplot(np.ravel(X), hist=False, rug=rug, color="r")
     if X2 is not None:
-        sns.distplot(np.ravel(X2), hist=False, rug=True, color="b")
+        sns.distplot(np.ravel(X2), hist=False, rug=rug, color="black")
     sns.plt.savefig(output)
     sns.plt.close()
 
