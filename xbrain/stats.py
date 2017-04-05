@@ -370,10 +370,8 @@ def estimate_biotypes(X, y, output):
 
     # use regularized CCA to determine the optimal number of cannonical variates
     logger.info('biotyping: cannonical correlation 10-fold cross validation to find brain-behaviour mappings')
-
-    regs = np.array(np.logspace(-4, 2, 10)) # regularization b/t 1e-4 and 1e2
+    regs = np.array(np.logspace(1, 6, 6)) # regularization b/t 1 and 100000
     numCCs = np.arange(2, 11)
-
     cca = rcca.CCACrossValidate(numCCs=numCCs, regs=regs, verbose=True)
     cca.train([X, y])
 
@@ -386,13 +384,6 @@ def estimate_biotypes(X, y, output):
     clst_tests = np.array(range(2,20))
     for i, n_clst in enumerate(clst_tests):
         clst_score[i] = cluster_stability(comps, n_clst)
-
-        # CH score gives large number of clusters, silhouette gives small
-        # ward's method, euclidean distance
-        #clst = AgglomerativeClustering(n_clusters=n_clst)
-        #clst.fit(comps)
-        #clst_score[i] = calinski_harabaz_score(comps, clst.labels_)
-        #clst_score[i] = silhouette_score(comps, clst.labels_)
 
     # minimum instability is considered the best stability
     target = np.min(clst_score)
