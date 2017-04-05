@@ -160,7 +160,10 @@ def classify(X_train, X_test, y_train, y_test, method, output):
             'hp_dict': hp_dict}
 
 
-def feature_select(X_train, y_train, X_test, p=0.25):
+def feature_select(X_train, y_train, X_test, n=0):
+
+    if not n:
+        n = int(round(X_train.shape[0]*0.25))
 
     # prune features with 0 variance
     n_before = X_train.shape[1]
@@ -194,7 +197,7 @@ def feature_select(X_train, y_train, X_test, p=0.25):
     mtry = int(round(X_train.shape[1] * 0.33))
     n_trees = 5000
     test = 0
-    while test == 0:
+    while test <= n:
         logger.info('training random forest with n_trees={}, mtry={}'.format(
             n_trees, mtry))
         dim_mdl = SelectFromModel(
@@ -203,24 +206,20 @@ def feature_select(X_train, y_train, X_test, p=0.25):
         dim_mdl.threshold = 0
         dim_mdl.fit(X_train, y_train)
 
-        # if this isnt 0, at least one of the features has some importance
-        test = np.mean(dim_mdl.estimator_.feature_importances_)
-        mtry = int(round(mtry * 0.8)) # reduce number of features required to split a node
+        importances = dim_mdl.estimator_.feature_importances_
+        test = len(np.where(importances)[0]) # number of nonzero importances
+        logger.info('{} features found with {}, target features={}'.format(
+            test, mtry, n))
+        mtry = int(round(mtry * 0.5)) # reduce number of features required to split a node
 
-    # n_features is set to be approximately p*number_of_samples iteratively
-    n_features = dim_mdl.transform(X_train).shape[1]
-    target_features = np.round(X_train.shape[0] * p)
-    increment = np.mean(dim_mdl.estimator_.feature_importances_) * 0.1
-    while n_features > target_features:
-        dim_mdl.threshold += increment
-        n_features = dim_mdl.transform(X_train).shape[1]
-        logger.debug('{} features selected with threshold {}, target={}'.format(
-            n_features, dim_mdl.threshold, target_features))
-
+    # set the threshold for n features
+    importances.sort()
+    threshold = importances[-n]
+    dim_mdl.threshold = threshold
+    logger.debug('random forest feature selection threshold {}'.format(threshold))
     X_train = dim_mdl.transform(X_train)
     X_test = dim_mdl.transform(X_test)
-
-    logger.info('random forest retained {}/{} features'.format(n_features, n_before))
+    logger.info('random forest retained {}/{} features'.format(n, n_before))
 
     #dim_mdl = LogisticRegression(penalty="l1", class_weight='balanced', n_jobs=6)
     #dim_hp = {'C': uniform(0.01, 100)}
@@ -298,8 +297,8 @@ def cluster_stability(X, k, n=100):
     See Stability-based validation of clustering solutions. Lange T et al. 2004.
     """
     # store the stability measures for each iteration
-    stabilities = np.empty(n)
-    stabilities[:] = np.nan
+    instabilities = np.empty(n)
+    instabilities[:] = np.nan
 
     # hierarchical clustering: ward's method, euclidean distance
     clst = AgglomerativeClustering(n_clusters=k)
@@ -327,17 +326,14 @@ def cluster_stability(X, k, n=100):
 
         for c in np.arange(k):
             idx_map = np.where(yp == c)
-            try:
-                yp_out[idx_map] = mappings[c, 1]
-            except:
-                print('c={}, mappings: {}'.format(c, mappings.shape))
-                import IPython; IPython.embed()
+            yp_out[idx_map] = mappings[c, 1]
 
-        stabilities[i] = 1 - pdist(np.vstack((yp_out, yb)), metric='hamming')
+        instabilities[i] = 1 - pdist(np.vstack((yp_out, yb)), metric='hamming')
 
-    stability = np.nanmean(stabilities) / k # normalize for number of clusters
+    # normalize instability by that expected by chance for this k
+    instability = np.nanmean(instabilities) / (1-(1/k))
 
-    return stability
+    return instability
 
 
 def estimate_biotypes(X, y, output):
@@ -375,10 +371,8 @@ def estimate_biotypes(X, y, output):
     # use regularized CCA to determine the optimal number of cannonical variates
     logger.info('biotyping: cannonical correlation 10-fold cross validation to find brain-behaviour mappings')
 
-    #regs = np.array(np.logspace(-4, 2, 10)) # regularization b/t 1e-4 and 1e2
-    regs = np.array(np.logspace(1, 6, 2))
-    #numCCs = np.arange(2, 11)
-    numCCs = np.arange(2, 4)
+    regs = np.array(np.logspace(-4, 2, 10)) # regularization b/t 1e-4 and 1e2
+    numCCs = np.arange(2, 11)
 
     cca = rcca.CCACrossValidate(numCCs=numCCs, regs=regs, verbose=True)
     cca.train([X, y])
@@ -391,19 +385,18 @@ def estimate_biotypes(X, y, output):
     clst_score = np.zeros(18)
     clst_tests = np.array(range(2,20))
     for i, n_clst in enumerate(clst_tests):
+        clst_score[i] = cluster_stability(comps, n_clst)
+
+        # CH score gives large number of clusters, silhouette gives small
         # ward's method, euclidean distance
         #clst = AgglomerativeClustering(n_clusters=n_clst)
         #clst.fit(comps)
-
-        # CH score gives me a very large number of clusters -- not sure which
-        # to use ATM so sticking with the one that gives me a small number ...
-        # should revisit when I test with many more y features
         #clst_score[i] = calinski_harabaz_score(comps, clst.labels_)
         #clst_score[i] = silhouette_score(comps, clst.labels_)
-        clst_score[i] = cluster_stability(comps, n_clst)
 
-    # take the best performing clustering
-    n_best_clst = clst_tests[clst_score == np.max(clst_score)][0]
+    # minimum instability is considered the best stability
+    target = np.min(clst_score)
+    n_best_clst = clst_tests[clst_score == target][0]
     clst = AgglomerativeClustering(n_clusters=n_best_clst)
     clst.fit(comps)
     clst_labels = clst.labels_
@@ -462,7 +455,7 @@ def biotype(X_train, X_test, y_train, mdl):
     The pipeline is as follows:
 
     1) Use connonical correlation to find a n_cc dimentional mapping between
-       the reduced feature matrix X_train_red and y_train.
+       the eeduced feature matrix X_train_red and y_train.
     2) Cluster the subjects using Ward's hierarchical clustering into biotypes,
        generating biotype labels (the new y_train).
     3) Train a linear discriminate classifier on X_train_red and the cluster
@@ -982,9 +975,9 @@ def plot_biotype_clusters(comps, output):
 def plot_n_cluster_estimation(clst_score, clst_tests, output):
     """Plots the cluster goodness score against the number of clusters"""
     plt.plot(clst_score)
-    plt.title('Calinski Harabaz scores')
-    plt.ylabel('Variance Ratio Criterion')
-    plt.xlabel('Number of Clusters (k)')
+    plt.title('cluster instability analysis')
+    plt.ylabel('instability')
+    plt.xlabel('number of clusters (k)')
     plt.xticks(range(len(clst_tests)), clst_tests)
     plt.savefig(output)
     plt.close()

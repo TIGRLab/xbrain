@@ -490,7 +490,8 @@ def main():
         X_test = X[test_idx, :]
 
         if select:
-            X_train, X_test = stats.feature_select(X_train, y_train, X_test, p=select)
+            n_select = int(round(select*X_train.shape[0]))
+            X_train, X_test = stats.feature_select(X_train, y_train, X_test, n=n_select)
 
         if diagnostics:
             if len(y_raw.shape) == 1:
