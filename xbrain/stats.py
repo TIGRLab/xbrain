@@ -328,7 +328,8 @@ def cluster_stability(X, k, n=100):
             idx_map = np.where(yp == c)
             yp_out[idx_map] = mappings[c, 1]
 
-        instabilities[i] = 1 - pdist(np.vstack((yp_out, yb)), metric='hamming')
+        # low if cluster solutions are similar
+        instabilities[i] = pdist(np.vstack((yp_out, yb)), metric='hamming')
 
     # normalize instability by that expected by chance for this k
     instability = np.nanmean(instabilities) / (1-(1/k))
