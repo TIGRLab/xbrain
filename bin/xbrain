@@ -150,6 +150,7 @@ import xbrain.stats as stats
 logging.basicConfig(level=logging.WARN, format="[%(name)s] %(levelname)s: %(message)s")
 logger = logging.getLogger(os.path.basename(__file__))
 
+
 def parse_results(results):
     """Parses results vector and returns mean & sem for test & train"""
     train_mean = np.mean([i[0] for i in results])
@@ -163,6 +164,34 @@ def writer(csv, string):
     """write to the submitted csv if it is defined"""
     if csv:
         csv.writelines(string)
+
+def assert_output(output):
+    """handles output directory (folder creation, permissions checking)"""
+    if output:
+        logger.info('output directory: {}'.format(output))
+        if not os.path.exists(output):
+            try:
+                os.makedirs(output)
+            except:
+                logger.error('failed to create output directory {}'.format(output))
+                sys.exit(1)
+    else:
+        logger.info('no output specified, all outputs will be written to ${HOME}')
+        output = os.path.expanduser('~')
+
+    return output
+
+
+def load_database(database):
+    """attempts to load database file, exits if fails"""
+    try:
+        db = pd.read_csv(database)
+    except:
+        logger.error('failed to parse input .csv database {}'.format(database))
+        sys.exit(1)
+
+    return db
+
 
 def main():
     arguments = docopt(__doc__)
@@ -193,23 +222,8 @@ def main():
     else:
         logger.setLevel(logging.INFO)
 
-    try:
-        db = pd.read_csv(database)
-    except:
-        logger.error('failed to parse input .csv database {}'.format(database))
-        sys.exit(1)
-
-    if output:
-        logger.info('output directory: {}'.format(output))
-        if not os.path.exists(output):
-            try:
-                os.makedirs(output)
-            except:
-                logger.error('failed to create output directory {}'.format(output))
-                sys.exit(1)
-    else:
-        logger.info('no output specified, all outputs will be written to ${HOME}')
-        output = os.path.expanduser('~')
+    db = load_database(database)
+    output = assert_output(output)
 
     if not diagnostics:
         csv_info = open(os.path.join(output, 'xbrain_information.csv'), 'wb')
