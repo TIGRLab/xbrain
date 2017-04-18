@@ -388,7 +388,7 @@ def main():
                 sys.exit(1)
         else:
             # biotype the full sample
-            biotype_mdl = stats.estimate_biotypes(X_bio, y, output)
+            biotype_mdl = stats.estimate_biotypes(X_bio, y, predict, output)
 
     if k > len(db):
         k = len(db) # leave one out cross validation

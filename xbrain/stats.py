@@ -337,7 +337,7 @@ def cluster_stability(X, k, n=100):
     return instability
 
 
-def estimate_biotypes(X, y, output):
+def estimate_biotypes(X, y, y_names, output):
     """
     Finds features in X that have a significant spearman's rank correlation
     with at least 1 of the variables in y (uncorrected p < 0.005). The reduced
@@ -375,19 +375,17 @@ def estimate_biotypes(X, y, output):
     numCCs = np.arange(2, 11)
     cca = rcca.CCACrossValidate(numCCs=numCCs, regs=regs, verbose=True)
     cca.train([X, y])
-
     n_best_cc = cca.best_numCC
-    best_reg = cca.best_reg
-    comps = cca.comps[0] # [0] uses comps from X, [1] uses comps from y
+
+    import IPython; IPython.embed()
 
     # estimate number of clusters by maximizing cluster quality criteria
+    comps = cca.comps[0] # components found in X
     clst_score = np.zeros(18)
     clst_tests = np.array(range(2,20))
     for i, n_clst in enumerate(clst_tests):
         clst_score[i] = cluster_stability(comps, n_clst)
-
-    # minimum instability is considered the best stability
-    target = np.min(clst_score)
+    target = np.min(clst_score) # minimize instability
     n_best_clst = clst_tests[clst_score == target][0]
     clst = AgglomerativeClustering(n_clusters=n_best_clst)
     clst.fit(comps)
@@ -402,14 +400,20 @@ def estimate_biotypes(X, y, output):
 
     # save biotype information
     np.savez_compressed(os.path.join(output, 'xbrain_biotype.npz'),
-                                              clst_centroids=clst_centroids,
-                                              n_best_clst=n_best_clst,
-                                              n_best_cc=n_best_cc,
-                                              best_reg=best_reg,
-                                              idx=idx,
-                                              comps=comps,
-                                              X=X,
-                                              y=y)
+        reg = cca.best_reg,
+        n_cc = n_best_cc,
+        n_clst = n_best_clst,
+        cancorrs = cca.cancorrs,
+        centroids = clst_centroids,
+        comps_X = cca.comps[0],
+        comps_y = cca.comps[1],
+        ws_X = cca.ws[0],
+        ws_y = cca.ws[1],
+        idx_X = idx,
+        X = X,
+        y = y,
+        y_names = y_names,
+        cca = cca)
     mdl = np.load(os.path.join(output, 'xbrain_biotype.npz'))
 
     plot_biotype_clusters(comps, os.path.join(output, 'xbrain_biotype_clusters.pdf'))
@@ -458,9 +462,9 @@ def biotype(X_train, X_test, y_train, mdl):
     """
     # get information from biotype model
     idx = mdl['idx']
-    n_clst = mdl['n_best_clst']
-    reg = mdl['best_reg']
-    n_cc = mdl['n_best_cc']
+    reg = mdl['reg']
+    n_clst = mdl['n_clst']
+    n_cc = mdl['n_cc']
 
     # idx is found using the spearman rank correlations between X and y
     X_train_red = X_train[:, idx]
