@@ -461,7 +461,7 @@ def biotype(X_train, X_test, y_train, mdl):
     This returns y_train and y_test, the discovered biotypes for classification.
     """
     # get information from biotype model
-    idx = mdl['idx']
+    idx = mdl['idx_X']
     reg = mdl['reg']
     n_clst = mdl['n_clst']
     n_cc = mdl['n_cc']
