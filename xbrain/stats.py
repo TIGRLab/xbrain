@@ -15,6 +15,7 @@ from scipy.optimize import curve_fit, linear_sum_assignment
 from scipy.stats import lognorm, randint, uniform, mode, spearmanr
 import scipy.cluster.hierarchy as sch
 from scipy.spatial.distance import pdist, squareform
+import nibabel as nib
 
 from sklearn.preprocessing import scale, LabelEncoder, label_binarize, LabelBinarizer
 from sklearn.model_selection import RandomizedSearchCV, GridSearchCV
@@ -366,6 +367,7 @@ def estimate_biotypes(X, y, y_names, output):
         if sum(p_vals <= 0.005) > 0:
             idx[vertex] = np.bool(1)
 
+    # only run CCA on the features of X related in some way to y
     logger.debug('{} verticies significantly related to at least one variable in y'.format(sum(idx)))
     X_red = X[:, idx]
 
@@ -374,10 +376,8 @@ def estimate_biotypes(X, y, y_names, output):
     regs = np.array(np.logspace(1, 6, 6)) # regularization b/t 1 and 100000
     numCCs = np.arange(2, 11)
     cca = rcca.CCACrossValidate(numCCs=numCCs, regs=regs, verbose=True)
-    cca.train([X, y])
+    cca.train([X_red, y])
     n_best_cc = cca.best_numCC
-
-    import IPython; IPython.embed()
 
     # estimate number of clusters by maximizing cluster quality criteria
     comps = cca.comps[0] # components found in X
@@ -403,6 +403,7 @@ def estimate_biotypes(X, y, y_names, output):
         reg = cca.best_reg,
         n_cc = n_best_cc,
         n_clst = n_best_clst,
+        clusters = clst_labels,
         cancorrs = cca.cancorrs,
         centroids = clst_centroids,
         comps_X = cca.comps[0],
@@ -961,8 +962,97 @@ def plot_clusters(X, output):
     plt.close()
 
 
+def plot_biotype_X_scatter(mdl, output):
+    """scatterplot of X components colored by cluster"""
+    fig = plt.figure()
+    if mdl['comps_X'].shape[1] >= 3:
+        ax = fig.add_subplot(111, projection='3d')
+        ax.scatter(mdl['comps_X'][:, 0], mdl['comps_X'][:, 1], mdl['comps_X'][:, 2],
+            c=mdl['clusters'])
+    else:
+        ax = fig.add_subplot(111)
+        ax.scatter(mdl['comps_X'][:, 0], mdl['comps_X'][:, 1], c=mdl['clusters'])
+    fig.savefig(output)
+    fig.close()
+
+
+def plot_biotype_y_loadings(mdl, output):
+    """plots relationship between each y component and the submitted y scores"""
+    correlations = np.zeros((mdl['y'].shape[1], mdl['comps_y'].shape[1]))
+    for i, score in enumerate(mdl['y'].T):
+        for j, comp in enumerate(mdl['comps_y'].T):
+            correlations[i, j] = np.corrcoef(score, comp)[0,1]
+    plt.imshow(correlations, cmap=plt.cm.RdBu_r, vmin=-1, vmax=1)
+    plt.yticks(range(len(mdl['y_names'])), mdl['y_names'])
+    plt.savefig(output)
+    plt.close()
+
+
+def plot_biotype_X_loadings(mdl, mask, output):
+    """prints the sum of connectivity loadings per ROI in mask"""
+    nii = nib.load(mask)
+    nii_data = nii.get_data()
+    rois = np.unique(nii_data[nii_data > 0])
+
+    # calculate the correlation of each connectivity feature with each component
+    correlations = np.zeros((mdl['X'].shape[1], mdl['comps_X'].shape[1]))
+    for i, conn in enumerate(mdl['X'].T):
+        for j, comp in enumerate(mdl['comps_X'].T):
+            correlations[i, j] = np.corrcoef(conn, comp)[0,1]
+
+    for i in range(correlations.shape[1]):
+        # copy of input atlas to store correlations
+        atlas_corrs = np.zeros(nii_data.shape)
+
+        # reconstruct correlation matrix (now representing relationships between
+        # connectivity features in X and the components found for X).
+        roi_conns = np.zeros((len(rois), len(rois)))
+        idx_triu = np.triu_indices(len(rois), k=1)
+        roi_conns[idx_triu] = correlations[:, i]
+        roi_conns = roi_conns + roi_conns.T
+
+        # discount negative correlations (contentious interpretation and
+        # protects us from over-interpreting negative correlations in global-
+        # signal regressed data).
+        roi_conns[roi_conns < 0] = 0
+
+        # save mean of the surviving connectivities for each ROI to atlas
+        roi_conns = np.mean(roi_conns, axis=1)
+
+        # load these connectivity values into the ROI mask
+        for j, roi in enumerate(rois):
+            atlas_corrs[nii_data == roi] = roi_conns[j]
+
+        # output atlas has a correlation map for each component along 4th axis
+        if i == 0:
+            output_nii = atlas_corrs
+        else:
+            output_nii = np.stack([output_nii, atlas_corrs], axis=3)
+
+    # save ROI connectivity correlations per component to nifti
+    output_nii = nib.nifti1.Nifti1Image(output_nii, nii.affine, header=nii.header)
+    output_nii.update_header()
+    output_nii.header_class(extensions=())
+    output_nii.to_filename(output)
+
+
+def plot_biotype_cluster_scores(mdl, output):
+    """boxplot of each y score from each biotype"""
+    # build dataframe for plotting
+    db = pd.DataFrame()
+    db['id'] = range(mdl['y'].shape[0])        # ID
+    db['biotype'] = mdl['clusters']            # grouping variable
+    for i in range(mdl['y'].shape[1]):
+        db[mdl['y_names'][i]] = standardize(mdl['y'][:, i]) # cognitive score, z scored
+    db = pd.melt(db, id_vars=['id', 'biotype'], value_vars=mdl['y_names'].tolist())
+
+    sns.boxplot(x="variable", y="value", hue="biotype", data=db, palette="RdBu")
+    sns.plt.savefig(output)
+    sns.plt.close()
+
+
 def plot_biotype_clusters(comps, output):
-    """Uses hierarchical clustering (ward's method) to show biotypes"""
+    """uses hierarchical clustering (ward's method) to show biotypes"""
     sns.clustermap(comps, method='ward', metric='euclidean')
     sns.plt.savefig(output)
     sns.plt.close()
