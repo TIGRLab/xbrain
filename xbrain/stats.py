@@ -339,6 +339,13 @@ def cluster_stability(X, k, n=100):
     return instability
 
 
+def project_labels(X_train, y_train, X_test):
+    """projects labels onto test set from an LDA mapping from training data"""
+    lda = LinearDiscriminantAnalysis()
+    lda.fit(X_train, y_train)
+    return(lda.predict(X_test))
+
+
 def estimate_biotypes(X, y, y_names, output):
     """
     Finds features in X that have a significant spearman's rank correlation
@@ -353,6 +360,8 @@ def estimate_biotypes(X, y, y_names, output):
     Returns the indicies of the reduced features set, the number of cannonical
     variates found, the optimal number of clusters, and the cannonical variates.
     """
+    # replace all NaNs with 0's for this analysis
+    X[np.isnan(X)] = 0
 
     # reduce X using the spearman rank correlation between X and y
     # in a for loop due to the immense size of (X.shape[1]+y.shape[1])^2
@@ -423,13 +432,6 @@ def estimate_biotypes(X, y, y_names, output):
         os.path.join(output, 'xbrain_biotype_n_cluster_estimation.pdf'))
 
     return mdl
-
-
-def project_labels(X_train, y_train, X_test):
-    """projects labels onto test set from an LDA mapping from training data"""
-    lda = LinearDiscriminantAnalysis()
-    lda.fit(X_train, y_train)
-    return(lda.predict(X_test))
 
 
 def biotype(X_train, X_test, y_train, mdl):
@@ -795,7 +797,7 @@ def make_classes(y, target_group):
     logger.info('y labels {} transformed to {}'.format(le.classes_, np.arange(len(le.classes_))))
     y = le.transform(y)
 
-    if target_group:
+    if target_group >= 0:
         target_group = int(np.where(target_group == le.classes_)[0][0]) # ugly type gymnastics should be fixed
 
     return(y, target_group)

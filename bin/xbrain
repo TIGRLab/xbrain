@@ -301,22 +301,16 @@ def main():
             sys.exit(1)
         writer(csv_info, '  y-cutoff={}\n'.format(y_cutoff))
 
-    # target_group: valid?
-    if method == 'ysplit':
-        target_group = 1
-    if method == 'multiclass' or method == 'target' or method == 'biotype':
-        if target_group:
-            target_group = int(target_group)
-        elif xcorr:
-            logger.error('target_group must be defined for "multiclass", "target", and "biotype"  modes when calculating xcorr')
-            sys.exit(1)
     if target_group:
+        target_group = int(target_group)
         writer(csv_info, '  target-group={}\n'.format(target_group))
+    else:
+        target_group = -1
 
     # two_template: valid?
     if method == 'anomaly' and two_template:
         logger.warning('anomaly mode does not allow for two template analysis, ignoring')
-        two_template = None
+        two_template = -1
     if two_template:
         two_template = int(two_template)
         if two_template == target_group:
@@ -348,13 +342,20 @@ def main():
             # split y at a pre-defined percentile
             y, target_group = stats.make_classes(y, target_group)
 
-        if target_group:
+        if target_group >= 0:
             if target_group not in y:
                 logger.error('target_group {} not in y: valid={}'.format(target_group, np.unique(y)))
                 sys.exit(1)
+        if two_template >= 0:
+            if two_template not in y:
+                logger.error('two template group {} not in y: valid={}'.format(two_template, np.unique(y)))
+                sys.exit(1)
 
+        # set y values of the target group to 1, and the rest to 0
         if method == 'target':
-            # set y values of the target group to 1, and the rest to 0
+            if target_group < 0:
+                logger.error('target_group undefined and method=target, exiting')
+                sys.exit(1)
             y_tmp = np.zeros(y.shape)
             y_tmp[y == target_group] = 1
             y_tmp[y != target_group] = 0
@@ -363,17 +364,6 @@ def main():
         # add a column with the preprocessed y groups
         y_preprocessed = ''.join(random.choice(string.ascii_uppercase) for _ in range(10))
         db[y_preprocessed] = y
-
-        # ensure target_group, two_template group is one of the groups in y
-        if method != 'anomaly':
-            if xcorr and target_group not in y:
-                logger.error('target group {} not in y: {}'.format(target_group, np.unique(y)))
-                sys.exit(1)
-
-            if two_template:
-                if two_template not in y:
-                    logger.error('two template group {} not in y: {}'.format(two_template, np.unique(y)))
-                    sys.exit(1)
 
     # list of tuples [(train1, test1), (train2, test2), ... (trainN, testN)]
     acc, rec, prec, f1, auc = [], [], [], [], []
@@ -470,17 +460,18 @@ def main():
 
         # cross-brain correlations: calculate X_xcorr from a training templates
         if xcorr:
-            logger.debug('xcorr: calculating template 1 (group {})'.format(target_group))
-            if method == 'anomaly':
-                # anomaly mode: use all subjects from training data to create X
-                template_1 = corr.find_template(db.iloc[train_idx], y_preprocessed, xcorr)
-            else:
-                # use subjects from the target group to create X
+            # calculate cross brain correlations with the target group only
+            if target_group >= 0:
+                logger.debug('xcorr: calculating template 1 (target_group={})'.format(target_group))
                 template_1 = corr.find_template(db.iloc[train_idx], y_preprocessed, xcorr, group=target_group)
+            # calculate cross brain correlations with the entire training sample
+            else:
+                logger.debug('xcorr: calculating template 1')
+                template_1 = corr.find_template(db.iloc[train_idx], y_preprocessed, xcorr)
             X_xcorr = corr.calc_xbrain(template_1, db, xcorr)
 
-            if two_template:
-                # create a second X from the second target group defined
+            # create a second X from the second target group defined, subtract
+            if two_template >= 0:
                 logger.debug('xcorr: calculating template 2 (group {})'.format(two_template))
                 template_2 = corr.find_template(db.iloc[train_idx], y_preprocessed, xcorr, group=two_template)
                 X2_xcorr = corr.calc_xbrain(template_2, db, xcorr)
