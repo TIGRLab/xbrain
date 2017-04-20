@@ -16,6 +16,7 @@ from scipy.stats import lognorm, randint, uniform, mode, spearmanr
 import scipy.cluster.hierarchy as sch
 from scipy.spatial.distance import pdist, squareform
 import nibabel as nib
+import pandas as pd
 
 from sklearn.preprocessing import scale, LabelEncoder, label_binarize, LabelBinarizer
 from sklearn.model_selection import RandomizedSearchCV, GridSearchCV
@@ -984,22 +985,29 @@ def plot_biotype_y_loadings(mdl, output):
             correlations[i, j] = np.corrcoef(score, comp)[0,1]
     plt.imshow(correlations, cmap=plt.cm.RdBu_r, vmin=-1, vmax=1)
     plt.yticks(range(len(mdl['y_names'])), mdl['y_names'])
+    plt.colorbar()
     plt.savefig(output)
     plt.close()
 
 
-def plot_biotype_X_loadings(mdl, mask, output):
-    """prints the sum of connectivity loadings per ROI in mask"""
+def plot_biotype_X_conn_loadings(mdl, X, mask, output):
+    """
+    prints the sum of connectivity loadings per ROI in mask for each canonical
+    variate. connectivity values are represented as the average positive
+    connectivity with all other ROIs.
+    """
+
     nii = nib.load(mask)
     nii_data = nii.get_data()
     rois = np.unique(nii_data[nii_data > 0])
 
     # calculate the correlation of each connectivity feature with each component
-    correlations = np.zeros((mdl['X'].shape[1], mdl['comps_X'].shape[1]))
-    for i, conn in enumerate(mdl['X'].T):
+    correlations = np.zeros((X.shape[1], mdl['comps_X'].shape[1]))
+    for i, conn in enumerate(X.T):
         for j, comp in enumerate(mdl['comps_X'].T):
             correlations[i, j] = np.corrcoef(conn, comp)[0,1]
 
+    output_list = []
     for i in range(correlations.shape[1]):
         # copy of input atlas to store correlations
         atlas_corrs = np.zeros(nii_data.shape)
@@ -1023,13 +1031,43 @@ def plot_biotype_X_loadings(mdl, mask, output):
         for j, roi in enumerate(rois):
             atlas_corrs[nii_data == roi] = roi_conns[j]
 
-        # output atlas has a correlation map for each component along 4th axis
-        if i == 0:
-            output_nii = atlas_corrs
-        else:
-            output_nii = np.stack([output_nii, atlas_corrs], axis=3)
+        output_list.append(atlas_corrs)
 
     # save ROI connectivity correlations per component to nifti
+    output_nii = np.stack(output_list, axis=3)
+    output_nii = nib.nifti1.Nifti1Image(output_nii, nii.affine, header=nii.header)
+    output_nii.update_header()
+    output_nii.header_class(extensions=())
+    output_nii.to_filename(output)
+
+
+def plot_biotype_X_stat_loadings(mdl, X, mask, output):
+    """prints the stat for each ROI in mask for each canonical variate"""
+    nii = nib.load(mask)
+    nii_data = nii.get_data()
+    rois = np.unique(nii_data[nii_data > 0])
+
+    # calculate the correlation of each stat with each component
+    correlations = np.zeros((X.shape[1], mdl['comps_X'].shape[1]))
+    for i, stat in enumerate(X.T):
+        for j, comp in enumerate(mdl['comps_X'].T):
+            correlations[i, j] = np.corrcoef(stat, comp)[0,1]
+
+    output_list = []
+    for i in range(correlations.shape[1]):
+        # copy of input atlas to store statistics
+        atlas_corrs = np.zeros(nii_data.shape)
+
+        # load stat values into ROI mask
+        roi_conns = np.zeros((len(rois)))
+        roi_conns = correlations[:, i]
+        for j, roi in enumerate(rois):
+            atlas_corrs[nii_data == roi] = roi_conns[j]
+
+        output_list.append(atlas_corrs)
+
+    # save ROI connectivity correlations per component to nifti
+    output_nii = np.stack(output_list, axis=3)
     output_nii = nib.nifti1.Nifti1Image(output_nii, nii.affine, header=nii.header)
     output_nii.update_header()
     output_nii.header_class(extensions=())

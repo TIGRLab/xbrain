@@ -9,10 +9,11 @@ Arguments:
     <database>      a .csv file containing MRI data (X) and non-neural data (y)
 
 Options:
-    --xcorr=TS             A list of timeseries for intrasubject correlation.
+    --xcorr=TS             A list of timeseries for intersubject correlations.
     --connectivity=CONN    A list of timeseries for static connectivity.
     --dynamics=DYNA        A list of timeseries for dynamic connectivity.
-    --biotype=BIO          A list of timeseries for biotyping.
+    --biotype-conn=BIOC    A list of timeseries for biotyping using static connectivity.
+    --biotype-xcorr=BIOX   A list of timeseries for biotyping using intersubject correlations.
     --statmaps=STATS       A list of statmaps .nii.gz (3D) predictors.
     --raw=RAW              A list of column names in database as predictors.
     --predict=PREDICT      A list of column names in database to predict.
@@ -196,26 +197,42 @@ def load_database(database):
 def main():
     arguments = docopt(__doc__)
     database      = arguments['<database>']
+
+    # X
     xcorr         = arguments['--xcorr']
     connectivity  = arguments['--connectivity']
     dynamics      = arguments['--dynamics']
-    biotype       = arguments['--biotype']
     statmaps      = arguments['--statmaps']
     raw           = arguments['--raw']
-    predict       = arguments['--predict']
-    covariates    = arguments['--covariates']
-    roi_mask      = arguments['--roi-mask']
-    k             = int(arguments['--k'])
-    select        = float(arguments['--select'])
+
+    # biotype related inputs (for y)
+    biotype_conn  = arguments['--biotype-conn']
+    biotype_xcorr = arguments['--biotype-xcorr']
     biotype_mdl   = arguments['--biotype-model']
+
+    # y
+    predict       = arguments['--predict']
+
+    # regressed out of X
+    covariates    = arguments['--covariates']
+
+    # xbrain methods
     method        = arguments['--method']
+    roi_mask      = arguments['--roi-mask']
     y_cutoff      = arguments['--y-cutoff']
     target_group  = arguments['--target-group']
     two_template  = arguments['--two-template']
     diagnostics   = arguments['--diagnostics']
+
+    # classification settings
+    k             = int(arguments['--k'])
+    select        = float(arguments['--select'])
+
+    # utility functions
     debug         = arguments['--debug']
     output        = arguments['--output']
 
+    # debug is very noisy
     logger.info('starting')
     if debug:
         logger.setLevel(logging.DEBUG)
@@ -240,7 +257,8 @@ def main():
     xcorr = utils.split_columns(xcorr)
     connectivity = utils.split_columns(connectivity)
     dynamics = utils.split_columns(dynamics)
-    biotype = utils.split_columns(biotype)
+    biotype_conn = utils.split_columns(biotype_conn)
+    biotype_xcorr = utils.split_columns(biotype_xcorr)
     raw = utils.split_columns(raw)
     predict = utils.split_columns(predict)
     covariates = utils.split_columns(covariates)
@@ -248,10 +266,12 @@ def main():
     columns = []
     columns.append(db.columns[0]) # id column assumed
 
-    for variable in [statmaps, xcorr, connectivity, dynamics, biotype, raw, predict, covariates]:
+    variables = [statmaps, xcorr, connectivity, dynamics, biotype_conn, biotype_xcorr, raw, predict, covariates]
+    for variable in variables:
         if variable:
             utils.assert_columns(db, variable)
             columns.extend(variable)
+
     columns = list(set(columns))
     db = db[columns]
     n_pre = len(db)
@@ -264,7 +284,7 @@ def main():
     y_raw = copy(y)
 
     # method: valid?
-    if biotype:
+    if biotype_conn or biotype_xcorr:
         method = 'biotype'
 
     methods = ['multiclass', 'target', 'ysplit', 'anomaly', 'biotype']
@@ -374,28 +394,49 @@ def main():
     if covariates:
         X_cov = utils.gather_columns(db, covariates)
 
-    if biotype:
-        # collect static connectivity features for biotyping
-        X_bio = corr.calc_connectivity(db, biotype)
-        X_bio = utils.clean(X_bio)
+    if method == 'biotype':
+
+        # collect complete biotyping data
+        if biotype_conn:
+            X_bio_conn = corr.calc_connectivity(db, biotype_conn)
+        if biotype_xcorr:
+            X_bio_xcorr = corr.calc_xbrain(db, db, biotype_xcorr)  # no template groups
+
+        for features in ['X_bio_xcorr', 'X_bio_conn']:
+            if features in vars():
+                if 'X_bio' in vars():
+                    X_bio = np.hstack((X_bio, eval(features)))
+                else:
+                    X_bio = eval(features)
+
+        # load the results of a previous run
         if biotype_mdl:
-            # load the results of a previous run
             try:
                 logger.info('loading biotype model from {}'.format(biotype_mdl))
                 biotype_mdl = utils.load_biotype(biotype_mdl)
             except Exception as e:
                 logger.error('error loading biotype model {}\n{}'.format(biotype_mdl, e))
                 sys.exit(1)
+        # biotype the full sample
         else:
-            # biotype the full sample
             biotype_mdl = stats.estimate_biotypes(X_bio, y, predict, output)
 
         # plot details about the loaded model
         stats.plot_biotype_X_scatter(biotype_mdl, os.path.join(output, 'xbrain_biotype_X_scatter.pdf'))
         stats.plot_biotype_y_loadings(biotype_mdl, os.path.join(output, 'xbrain_biotype_y_loadings.pdf'))
-        if roi_mask:
-            stats.plot_biotype_X_loadings(biotype_mdl, roi_mask, os.path.join(output, 'xbrain_biotype_X_loadings.nii.gz'))
         stats.plot_biotype_cluster_scores(biotype_mdl, os.path.join(output, 'xbrain_biotype_cluster_scores.pdf'))
+
+        # for each X input column product one nifti file of loadings
+        if biotype_conn and roi_mask:
+            for column in biotype_conn:
+                X_tmp = corr.calc_connectivity(db, [column])
+                stats.plot_biotype_X_conn_loadings(biotype_mdl, X_tmp, roi_mask,
+                    os.path.join(output, 'xbrain_biotype_X_conn_loadings_{}.nii.gz'.format(column)))
+        if biotype_xcorr and roi_mask:
+            for column in biotype_xcorr:
+                X_tmp = corr.calc_xbrain(db, db, [column])
+                stats.plot_biotype_X_stat_loadings(biotype_mdl, X_tmp, roi_mask,
+                    os.path.join(output, 'xbrain_biotype_X_stat_loadings_{}.nii.gz'.format(column)))
 
     if k > len(db):
         k = len(db) # leave one out cross validation
