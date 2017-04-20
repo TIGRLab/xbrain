@@ -395,7 +395,7 @@ def main():
         stats.plot_biotype_y_loadings(biotype_mdl, os.path.join(output, 'xbrain_biotype_y_loadings.pdf'))
         if roi_mask:
             stats.plot_biotype_X_loadings(biotype_mdl, roi_mask, os.path.join(output, 'xbrain_biotype_X_loadings.nii.gz'))
-        stats.plot_biotype_cluster_scores(biotype_mdl, os.path,join(output, 'xbrain_biotype_cluster_scores.pdf'))
+        stats.plot_biotype_cluster_scores(biotype_mdl, os.path.join(output, 'xbrain_biotype_cluster_scores.pdf'))
 
     if k > len(db):
         k = len(db) # leave one out cross validation
