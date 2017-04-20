@@ -158,7 +158,11 @@ def load_biotype(biotype_mdl):
 
     mdl = np.load(biotype_mdl)
 
-    for key in ['idx', 'comps', 'best_reg', 'clst_centroids', 'n_best_cc', 'n_best_clst']:
+    # expected in a valid biotype model (see stats.estimate_biotypes)
+    keys = ['reg', 'n_cc', 'n_clst', 'clusters', 'cancorrs', 'centroids',
+        'comps_X', 'comps_y', 'ws_X', 'ws_y', 'idx_X', 'X', 'y', 'y_names', 'cca']
+
+    for key in keys:
         if key not in mdl.keys():
             raise Exception('biotype model does not contain variable {}'.format(key))
 
