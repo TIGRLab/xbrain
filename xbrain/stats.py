@@ -973,7 +973,7 @@ def plot_biotype_X_scatter(mdl, output):
         ax = fig.add_subplot(111)
         ax.scatter(mdl['comps_X'][:, 0], mdl['comps_X'][:, 1], c=mdl['clusters'])
     fig.savefig(output)
-    fig.close()
+    plt.close()
 
 
 def plot_biotype_y_loadings(mdl, output):
