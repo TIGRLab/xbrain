@@ -79,7 +79,12 @@ def read_timeseries(db, row, col):
     Return numpy array of the timeseries defined in the ith row, named column
     of input database db.
     """
-    timeseries_file = db.iloc[row][col]
+    # in the single subject case
+    if len(db.shape) == 1:
+        timeseries_file = db[col]
+    # in the multi subject case
+    else:
+        timeseries_file = db.iloc[row][col]
     logger.debug('reading timeseries file {}'.format(timeseries_file))
     try:
         return(np.genfromtxt(timeseries_file, delimiter=','))
@@ -125,13 +130,14 @@ def dynamic_connectivity(ts, win_length, win_step):
 
 def calc_dynamic_connectivity(db, connectivity, win_length, win_step):
     """
-    Calculates within-brain dynamic connnectivity of each participant in the db.
-    The connectivity features for each subject are returns in a ROI x window
-    matrix, which are concatenated along the third dimension for each
-    participant and returned as the feature matrix X.
+    Calculates within-brain dynamic connnectivity of each participant in the
+    submitted db. The connectivity features for all subjects are returned in a
+    ROI x window matrix.
     """
     db_idx = db.index
-    n = len(db)
+    all_rs = []
+
+    # loop through connectivity experiments
     for i, column in enumerate(connectivity):
 
         # loop through subjects
@@ -146,20 +152,10 @@ def calc_dynamic_connectivity(db, connectivity, win_length, win_step):
             logger.debug('timeseries data: n_rois={}, n_timepoints={}'.format(ts.shape[0], ts.shape[1]))
             ts = zscore(ts)
             rs = dynamic_connectivity(ts, win_length, win_step)
-
-            # for the first timeseries, initialize the output array
             logger.debug('{} windows extracted'.format(rs.shape[1]))
-            if j == 0:
-                corrs = np.zeros((rs.shape[0], rs.shape[1], n))
-            corrs[:, :, j] = rs
+            all_rs.append(rs)
 
-        # for multiple connectivity experiments, concat rs into X along second
-        # axis (X: features X timepoint X samples)
-        if i == 0:
-            X = corrs
-        else:
-            X = np.concatenate((X, corrs), axis=1)
-
+    X = np.hstack(all_rs)
     logger.debug('correlation feature matrix shape: {}'.format(X.shape))
 
     return X

@@ -27,6 +27,7 @@ Options:
     --target-group=GROUP1  Draw the xbrain template from this group.
     --two-template=GROUP2  If defined, X is the difference between target-group and this group.
     --output=OUTPUT        A directory to place outputs.
+    --shuffle              Shuffles y randomly for control experiments.
     --diagnostics          Run diagnostics on input data.
     --debug                Verbose outputs.
 
@@ -227,6 +228,7 @@ def main():
     # classification settings
     k             = int(arguments['--k'])
     select        = float(arguments['--select'])
+    shuffle       = arguments['--shuffle']
 
     # utility functions
     debug         = arguments['--debug']
@@ -480,41 +482,38 @@ def main():
 
         # dynamic connectivity: calculate group-wise states from training data
         if dynamics:
-            # last two parameters: win_length, win_step (both in TRs)
-            d_rs = corr.calc_dynamic_connectivity(db, dynamics, 30, 4)
+
+            win_length = 30
+            win_step = 4
+
+            # loop through groups to get states for each group independently
             groups = np.unique(y_train)
-
+            all_states = []
             for i, group in enumerate(groups):
+
+                # last two parameters: win_length, win_step (both in TRs)
                 logger.debug('dynamics: calculating states for group {}'.format(group))
-
-                # sub-select the training data from this group
                 train_idx_subset = train_idx[np.where(y_train == group)[0]]
-                d_rs_group = d_rs[:, :, train_idx_subset]
-
-                # reshape to rois x windows
-                n_rois, n_windows, n_subj = d_rs_group.shape
-                d_rs_group = d_rs_group.reshape(n_rois, n_windows*n_subj)
-
-                # use k means clustering to compute centroids (rois x states)
-                # nb if we get errors here, will need to seperately set 0s and infs.
+                d_rs_group = corr.calc_dynamic_connectivity(db.iloc[train_idx_subset], dynamics, win_length, win_step)
                 d_rs_group[np.isnan(d_rs_group)] = 0
                 d_rs_group[np.isinf(d_rs_group)] = 0
-                group_states = stats.get_states(d_rs_group, k=5)
 
-                # combine states between groups
-                if i == 0:
-                    states = group_states
-                else:
-                    states = np.hstack((states, group_states))
+                # use k means clustering to compute centroids (rois x states)
+                group_states = stats.get_states(d_rs_group, k=5)
+                all_states.append(group_states)
+
+            # combine states between groups
+            states = np.hstack(all_states)
 
             # regress each subj against the states (clusters). X is beta coeffs
-            for subj in np.arange(d_rs.shape[2]):
+            all_coeffs = []
+            for subj in np.arange(db.shape[0]):
                 logger.debug('fitting states for subject {}'.format(subj))
-                coeffs = stats.fit_states(d_rs[:, :, subj], states)
-                if subj == 0:
-                    X_dynamics = coeffs
-                else:
-                    X_dynamics = np.vstack((X_dynamics, coeffs))
+                d_rs = corr.calc_dynamic_connectivity(db.iloc[subj], dynamics, win_length, win_step)
+                coeffs = stats.fit_states(d_rs, states)
+                all_coeffs.append(coeffs)
+
+            X_dynamics = np.vstack(all_coeffs)
 
         # compose X out of the appropriate matricies
         try:
@@ -556,6 +555,13 @@ def main():
 
         stats.plot_X(X_train, os.path.join(output, 'xbrain_X_test-vs-train.pdf'), X2=X_test)
 
+        # control experiment: y is random, classifier should perform at chance
+        if shuffle:
+            logger.debug('null experiment: shuffling y')
+            y_train = np.random.permutation(y_train)
+            y_test = np.random.permutation(y_test)
+
+        # run classification including inner loop hyperparameter optimization
         try:
             results = stats.classify(X_train, X_test, y_train, y_test, method, output)
         except Exception as e:
