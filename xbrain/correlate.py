@@ -140,15 +140,32 @@ def calc_dynamic_connectivity(db, connectivity, win_length, win_step):
     # loop through connectivity experiments
     for i, column in enumerate(connectivity):
 
-        # loop through subjects
-        for j, subj in enumerate(db_idx):
+        if len(db.shape) == 2:
+
+            # loop through subjects
+            for j, subj in enumerate(db_idx):
+
+                try:
+                    ts = read_timeseries(db, j, column)
+                except IOError as e:
+                    logger.error(e)
+                    sys.exit(1)
+
+                #ts = median_filter(ts)
+                logger.debug('timeseries data: n_rois={}, n_timepoints={}'.format(ts.shape[0], ts.shape[1]))
+                ts = zscore(ts)
+                rs = dynamic_connectivity(ts, win_length, win_step)
+                logger.debug('{} windows extracted'.format(rs.shape[1]))
+                all_rs.append(rs)
+
+        else:
+
+            # only one subject, so don't loop
             try:
-                ts = read_timeseries(db, j, column)
+                ts = read_timeseries(db, 0, column)
             except IOError as e:
                 logger.error(e)
                 sys.exit(1)
-
-            #ts = median_filter(ts)
             logger.debug('timeseries data: n_rois={}, n_timepoints={}'.format(ts.shape[0], ts.shape[1]))
             ts = zscore(ts)
             rs = dynamic_connectivity(ts, win_length, win_step)

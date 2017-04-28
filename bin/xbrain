@@ -155,11 +155,15 @@ logger = logging.getLogger(os.path.basename(__file__))
 
 def parse_results(results):
     """Parses results vector and returns mean & sem for test & train"""
-    train_mean = np.mean([i[0] for i in results])
-    test_mean = np.mean([i[1] for i in results])
-    train_sem = sem([i[0] for i in results])
-    test_sem = sem([i[1] for i in results])
-    return(train_mean, test_mean, train_sem, test_sem)
+    outputs = []
+    n = len(results[0])
+
+    for i in range(n):
+        m = np.mean([result[i] for result in results])
+        s = sem([result[i] for result in results])
+        outputs.append((m, s))
+
+    return(outputs)
 
 
 def writer(csv, string):
@@ -374,7 +378,14 @@ def main():
     y_predictions = np.zeros(len(db)) # predictions from test sets
     y_actual = np.zeros(len(db)) # 'actual' values from test sets
 
-    writer(csv_results, 'k,accuracy_train,accuracy_test,recall_train,recall_test,precision_train,precision_test,f1_train,f1_test,auc_train,auc_test,n_features_retained\n')
+    header = ','.join([
+        'k', 'accuracy_train', 'accuracy_test',
+        'recall_train_macro', 'recall_test_macro', 'recall_train_micro', 'recall_test_micro',
+        'precision_train_macro', 'precision_test_macro', 'precision_train_micro', 'precision_test_micro',
+        'f1_train_macro', 'f1_test_macro', 'f1_train_micro', 'f1_test_micro',
+        'auc_train_macro', 'auc_test_macro', 'auc_train_micro', 'auc_test_micro',
+        'n_features_retained\n'])
+    writer(csv_results, header)
 
     # below are outside k-fold b/c no info shared between samples
     if connectivity:
@@ -576,16 +587,16 @@ def main():
         auc.append(results['auc'])
 
         # record the predicted/correct values in the same order as database
-        y_predictions[test_idx] = results['X_test_pred']
+        y_predictions[test_idx] = results['y_test_pred']
         y_actual[test_idx] = y_test
 
-        writer(csv_results, '{},{},{},{},{},{},{},{},{},{},{},{}\n'.format(
+        writer(csv_results, '{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n'.format(
             count,
             results['accuracy'][0],results['accuracy'][1],
-            results['recall'][0], results['recall'][1],
-            results['precision'][0], results['precision'][1],
-            results['f1'][0], results['f1'][1],
-            results['auc'][0], results['auc'][1],
+            results['recall'][0], results['recall'][1], results['recall'][2], results['recall'][3],
+            results['precision'][0], results['precision'][1], results['precision'][2], results['precision'][3],
+            results['f1'][0], results['f1'][1], results['f1'][2], results['f1'][3],
+            results['auc'][0], results['auc'][1], results['auc'][2], results['auc'][3],
             results['n_features_retained']))
         count += 1
 
@@ -613,27 +624,65 @@ def main():
     db.to_csv(os.path.join(output, 'xbrain_database.csv'), index=False)
 
     # final results
-    acc_train_mean, acc_test_mean, acc_train_sem, acc_test_sem = parse_results(acc)
-    rec_train_mean, rec_test_mean, rec_train_sem, rec_test_sem = parse_results(rec)
-    prec_train_mean, prec_test_mean, prec_train_sem, prec_test_sem = parse_results(prec)
-    f1_train_mean, f1_test_mean, f1_train_sem, f1_test_sem = parse_results(f1)
-    auc_train_mean, auc_test_mean, auc_train_sem, auc_test_sem = parse_results(auc)
+    acc = parse_results(acc)
+    acc_train_mean = acc[0][0]
+    acc_train_sem = acc[0][1]
+    acc_test_mean = acc[1][0]
+    acc_test_sem = acc[1][1]
 
-    writer(csv_results, 'mean,{},{},{},{},{},{},{},{},{},{},{}\n'.format(
+    rec = parse_results(rec)
+    rec_train_macro_mean = rec[0][0]
+    rec_train_macro_sem = rec[0][1]
+    rec_test_macro_mean = rec[1][0]
+    rec_test_macro_sem = rec[1][1]
+    rec_train_micro_mean = rec[2][0]
+    rec_train_micro_sem = rec[2][1]
+    rec_test_micro_mean = rec[3][0]
+    rec_test_micro_sem = rec[3][1]
+
+    prec = parse_results(prec)
+    prec_train_macro_mean = prec[0][0]
+    prec_train_macro_sem = prec[0][1]
+    prec_test_macro_mean = prec[1][0]
+    prec_test_macro_sem = prec[1][1]
+    prec_train_micro_mean = prec[2][0]
+    prec_train_micro_sem = prec[2][1]
+    prec_test_micro_mean = prec[3][0]
+    prec_test_micro_sem = prec[3][1]
+
+    f1 = parse_results(f1)
+    f1_train_macro_mean = f1[0][0]
+    f1_train_macro_sem = f1[0][1]
+    f1_test_macro_mean = f1[1][0]
+    f1_test_macro_sem = f1[1][1]
+    f1_train_micro_mean = f1[2][0]
+    f1_train_micro_sem = f1[2][1]
+    f1_test_micro_mean = f1[3][0]
+    f1_test_micro_sem = f1[3][1]
+
+    auc = parse_results(auc)
+    auc_train_macro_mean = auc[0][0]
+    auc_train_macro_sem = auc[0][1]
+    auc_test_macro_mean = auc[1][0]
+    auc_test_macro_sem = auc[1][1]
+    auc_train_micro_mean = auc[2][0]
+    auc_train_micro_sem = auc[2][1]
+    auc_test_micro_mean = auc[3][0]
+    auc_test_micro_sem = auc[3][1]
+
+    writer(csv_results, 'mean,{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},n/a\n'.format(
         acc_train_mean, acc_test_mean,
-        rec_train_mean, rec_test_mean,
-        prec_train_mean, prec_test_mean,
-        f1_train_mean, f1_test_mean,
-        auc_train_mean, auc_test_mean,
-        'n/a'))
+        rec_train_macro_mean, rec_test_macro_mean, rec_train_micro_mean, rec_test_micro_mean,
+        prec_train_macro_mean, prec_test_macro_mean, prec_train_micro_mean, prec_test_micro_mean,
+        f1_train_macro_mean, f1_test_macro_mean, f1_train_micro_mean, f1_test_micro_mean,
+        auc_train_macro_mean, auc_test_macro_mean, auc_train_micro_mean, auc_test_micro_mean))
 
-    writer(csv_results, 'sem,{},{},{},{},{},{},{},{},{},{},{}'.format(
+    writer(csv_results, 'sem,{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},n/a'.format(
         acc_train_sem, acc_test_sem,
-        rec_train_sem, rec_test_sem,
-        prec_train_sem, prec_test_sem,
-        f1_train_sem, f1_test_sem,
-        auc_train_sem, auc_test_sem,
-        'n/a'))
+        rec_train_macro_sem, rec_test_macro_sem, rec_train_micro_sem, rec_test_micro_sem,
+        prec_train_macro_sem, prec_test_macro_sem, prec_train_micro_sem, prec_test_micro_sem,
+        f1_train_macro_sem, f1_test_macro_sem, f1_train_micro_sem, f1_test_micro_sem,
+        auc_train_macro_sem, auc_test_macro_sem, auc_train_micro_sem, auc_test_micro_sem))
 
     if not diagnostics:
         csv_hyper.close()
@@ -641,9 +690,9 @@ def main():
         csv_results.close()
 
     logger.info('train results:\n  acc={}+/-{}\n  f1={}+/-{}\n  auc={}+/-{}'.format(
-             acc_train_mean, acc_train_sem, f1_train_mean, f1_train_sem, auc_train_mean, auc_train_sem))
+        acc_train_mean, acc_train_sem, f1_train_macro_mean, f1_train_macro_sem, auc_train_macro_mean, auc_train_macro_sem))
     logger.info('test results:\n  acc={}+/-{}\n  f1={}+/-{}\n  auc={}+/-{}'.format(
-             acc_test_mean, acc_test_sem, f1_test_mean, f1_test_sem, auc_test_mean, auc_test_sem))
+        acc_test_mean, acc_test_sem, f1_test_macro_mean, f1_test_macro_sem, auc_test_macro_mean, auc_test_macro_sem))
 
 if __name__ == '__main__':
     main()

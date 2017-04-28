@@ -119,32 +119,43 @@ def classify(X_train, X_test, y_train, y_test, method, output):
         logger.info('Inner Loop complete, best parameters found:\n{}'.format(hp_dict))
         logger.info('maximum test score during hyperparameter CV ({}): {}'.format(scoring, np.max(clf.cv_results_['mean_test_score'])))
 
-    X_train_pred = clf.predict(X_train)
-    X_test_pred = clf.predict(X_test)
+    y_train_pred = clf.predict(X_train)
+    y_test_pred = clf.predict(X_test)
 
     # make coding of anomalys like other classifiers
     if method == 'anomaly':
-        X_train_pred[X_train_pred == -1] = 0
-        X_test_pred[X_test_pred == -1] = 0
+        y_train_pred[y_train_pred == -1] = 0
+        y_test_pred[y_test_pred == -1] = 0
 
     # collect performance metrics
-    acc = (accuracy_score(y_train, X_train_pred), accuracy_score(y_test, X_test_pred))
-    rec = (recall_score(y_train, X_train_pred, average='macro'), recall_score(y_test, X_test_pred, average='macro'))
-    prec = (precision_score(y_train, X_train_pred, average='macro'), precision_score(y_test, X_test_pred, average='macro'))
-    f1 = (f1_score(y_train, X_train_pred, average='macro'), f1_score(y_test, X_test_pred, average='macro'))
+    acc = (accuracy_score(y_train, y_train_pred), accuracy_score(y_test, y_test_pred))
+    rec = (recall_score(y_train, y_train_pred, average='macro'),
+           recall_score(y_test, y_test_pred, average='macro'),
+           recall_score(y_train, y_train_pred, average='micro'),
+           recall_score(y_test, y_test_pred, average='micro'))
+    prec = (precision_score(y_train, y_train_pred, average='macro'),
+            precision_score(y_test, y_test_pred, average='macro'),
+            precision_score(y_train, y_train_pred, average='micro'),
+            precision_score(y_test, y_test_pred, average='micro'))
+    f1 = (f1_score(y_train, y_train_pred, average='macro'),
+          f1_score(y_test, y_test_pred, average='macro'),
+          f1_score(y_train, y_train_pred, average='micro'),
+          f1_score(y_test, y_test_pred, average='micro'))
 
     # transforms labels to label indicator format, needed for multiclass
     lb = LabelBinarizer()
     lb.fit(y_train)
     # AUC only works if there is more than one class in y
     if len(np.unique(y_test)) > 1:
-        auc = (roc_auc_score(lb.transform(y_train), lb.transform(X_train_pred), average='macro'),
-               roc_auc_score(lb.transform(y_test), lb.transform(X_test_pred), average='macro'))
+        auc = (roc_auc_score(lb.transform(y_train), lb.transform(y_train_pred), average='macro'),
+               roc_auc_score(lb.transform(y_test), lb.transform(y_test_pred), average='macro'),
+               roc_auc_score(lb.transform(y_train), lb.transform(y_train_pred), average='micro'),
+               roc_auc_score(lb.transform(y_test), lb.transform(y_test_pred), average='micro'))
     else:
         auc = (0, 0)
 
-    logger.info('TRAIN: confusion matrix\n{}'.format(confusion_matrix(y_train, X_train_pred)))
-    logger.info('TEST:  confusion matrix\n{}'.format(confusion_matrix(y_test, X_test_pred)))
+    logger.info('TRAIN: confusion matrix\n{}'.format(confusion_matrix(y_train, y_train_pred)))
+    logger.info('TEST:  confusion matrix\n{}'.format(confusion_matrix(y_test, y_test_pred)))
 
     # check feature importance (QC for HC importance)
     # for fid in np.arange(10):
@@ -157,7 +168,7 @@ def classify(X_train, X_test, y_train, y_test, method, output):
             'precision': prec,
             'f1': f1,
             'auc': auc,
-            'X_test_pred': X_test_pred,
+            'y_test_pred': y_test_pred,
             'n_features_retained': n_features,
             'hp_dict': hp_dict}
 
@@ -517,7 +528,7 @@ def fit_states(d_rs, states):
     d_rs = utils.clean(d_rs)
     clf = LinearRegression()
     clf.fit(d_rs, states)
-    return(np.sum(clf.coef_, axis=1))
+    return(np.mean(clf.coef_, axis=1))
 
 
 def r_to_z(R):
