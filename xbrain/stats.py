@@ -1022,8 +1022,9 @@ def plot_biotype_X_conn_loadings(mdl, X, mask, output):
 
     output_list = []
     for i in range(correlations.shape[1]):
-        # copy of input atlas to store correlations
-        atlas_corrs = np.zeros(nii_data.shape)
+        # copy of input atlas to store correlations (+ve and -ve seperate)
+        atlas_corrs_pos = np.zeros(nii_data.shape)
+        atlas_corrs_neg = np.zeros(nii_data.shape)
 
         # reconstruct correlation matrix (now representing relationships between
         # connectivity features in X and the components found for X).
@@ -1032,19 +1033,21 @@ def plot_biotype_X_conn_loadings(mdl, X, mask, output):
         roi_conns[idx_triu] = correlations[:, i]
         roi_conns = roi_conns + roi_conns.T
 
-        # discount negative correlations (contentious interpretation and
-        # protects us from over-interpreting negative correlations in global-
-        # signal regressed data).
-        roi_conns[roi_conns < 0] = 0
-
-        # save mean of the surviving connectivities for each ROI to atlas
-        roi_conns = np.mean(roi_conns, axis=1)
+        # seperate +ve and -ve correlations so we can take mean of each
+        roi_conns_pos = np.zeros(roi_conns.shape)
+        roi_conns_neg = np.zeros(roi_conns.shape)
+        roi_conns_pos[roi_conns >= 0] = roi_conns[roi_conns >= 0]
+        roi_conns_neg[roi_conns < 0] = roi_conns[roi_conns < 0]
+        roi_conns_pos = np.nanmean(roi_conns_pos, axis=1)
+        roi_conns_neg = np.nanmean(roi_conns_neg, axis=1)
 
         # load these connectivity values into the ROI mask
         for j, roi in enumerate(rois):
-            atlas_corrs[nii_data == roi] = roi_conns[j]
+            atlas_corrs_pos[nii_data == roi] = roi_conns_pos[j]
+            atlas_corrs_neg[nii_data == roi] = roi_conns_neg[j]
 
-        output_list.append(atlas_corrs)
+        output_list.append(atlas_corrs_pos)
+        output_list.append(atlas_corrs_neg)
 
     # save ROI connectivity correlations per component to nifti
     output_nii = np.stack(output_list, axis=3)
