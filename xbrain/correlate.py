@@ -239,12 +239,14 @@ def calc_xbrain(template_db, db, timeseries):
         for j, subj in enumerate(db_idx):
             if j == 0:
                 n_roi, n_tr, n_subjects = template_ts.shape
+
                 # for the first timeseries, initialize the output array
                 # this is if we only store the diagonal
-                xcorrs = np.zeros((n, template_ts.shape[0]))
+                #xcorrs = np.zeros((n, template_ts.shape[0]))
+
                 # this is for storing the top half of the matrix
-                #idx_triu = np.triu_indices(n_roi)
-                #xcorrs = np.zeros((n, len(np.ravel(idx_triu))/2))
+                idx_triu = np.triu_indices(n_roi)
+                xcorrs = np.zeros((n, len(np.ravel(idx_triu))/2))
 
             try:
                 ts = read_timeseries(db, j, column)
@@ -262,10 +264,10 @@ def calc_xbrain(template_db, db, timeseries):
             try:
                 # diag of the intersubject corrs (upper right corner of matrix),
                 # this includes only the correlations between homologous regions
-                rs = np.diag(np.corrcoef(ts, y=template_mean)[n_roi:, :n_roi])
+                #rs = np.diag(np.corrcoef(ts, y=template_mean)[n_roi:, :n_roi])
 
                 # full xbrain connectivity matrix
-                #rs = np.corrcoef(ts, y=template_mean)[n_roi:, :n_roi][idx_triu]
+                rs = np.corrcoef(ts, y=template_mean)[n_roi:, :n_roi][idx_triu]
             except:
                 raise Exception('xcorr dimension missmatch: subject {} dims={}, timeseries={}, template dims={}'.format(j, ts.shape, column, template_mean.shape))
 

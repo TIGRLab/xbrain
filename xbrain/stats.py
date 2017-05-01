@@ -485,6 +485,12 @@ def biotype(X_train, X_test, y_train, mdl):
     X_train_red = X_train[:, idx]
     X_test_red = X_test[:, idx]
 
+    # CCA cannot handle NaNs, Infs -- should merge with utils.clean(X)
+    X_train_red[np.isnan(X_train_red)] = 0
+    X_test_red[np.isnan(X_test_red)] = 0
+    X_train_red[np.isinf(X_train_red)] = 0
+    X_test_red[np.isinf(X_test_red)] = 0
+
     # use regularized CCA to find brain-behaviour mapping from the training set
     logger.info('biotyping training set')
     cca = rcca.CCA(numCC=n_cc, reg=reg)
