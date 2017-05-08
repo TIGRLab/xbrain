@@ -424,6 +424,9 @@ def main():
         else:
             biotype_mdl = stats.estimate_biotypes(X_bio, y, predict, output)
 
+        # save the biotypes in the database (for post hoc analysis)
+        db['biotype'] = biotype_mdl['clusters']
+
         # plot details about the loaded model
         stats.plot_biotype_X_scatter(biotype_mdl, os.path.join(output, 'xbrain_biotype_X_scatter.pdf'))
         stats.plot_biotype_y_loadings(biotype_mdl, os.path.join(output, 'xbrain_biotype_y_loadings.pdf'))
