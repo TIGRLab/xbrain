@@ -394,7 +394,7 @@ def estimate_biotypes(X, y, y_names, output):
 
     # use regularized CCA to determine the optimal number of cannonical variates
     logger.info('biotyping: cannonical correlation 10-fold cross validation to find brain-behaviour mappings')
-    regs = np.array(np.logspace(1, 6, 6)) # regularization b/t 1 and 100000
+    regs = np.array([0.01, 0.1, 1, 10, 100])
     numCCs = np.arange(2, 11)
     cca = rcca.CCACrossValidate(numCCs=numCCs, regs=regs, verbose=True)
     cca.train([X_red, y])
