@@ -70,7 +70,7 @@ def classify(X_train, X_test, y_train, y_test, method, output):
         scoring = 'roc_auc'
         model = 'RIF'
     elif method == 'ysplit':
-        scoring = 'roc_auc'
+        scoring = 'f1_macro'
         model = 'SVC'
     else:
         scoring = 'f1_macro'
@@ -152,7 +152,7 @@ def classify(X_train, X_test, y_train, y_test, method, output):
                roc_auc_score(lb.transform(y_train), lb.transform(y_train_pred), average='micro'),
                roc_auc_score(lb.transform(y_test), lb.transform(y_test_pred), average='micro'))
     else:
-        auc = (0, 0)
+        auc = (0, 0, 0, 0)
 
     logger.info('TRAIN: confusion matrix\n{}'.format(confusion_matrix(y_train, y_train_pred)))
     logger.info('TEST:  confusion matrix\n{}'.format(confusion_matrix(y_test, y_test_pred)))
@@ -357,13 +357,16 @@ def project_labels(X_train, y_train, X_test):
     return(lda.predict(X_test))
 
 
-def estimate_biotypes(X, y, y_names, output):
+def estimate_biotypes(X, y, y_names, output, k=None):
     """
     Finds features in X that have a significant spearman's rank correlation
     with at least 1 of the variables in y (uncorrected p < 0.005). The reduced
     feature set X_red is then used to estimate the optimal number of cannonical
     variates that represent the mapping between X_red and y using cross
     validation.
+
+    If k is defined, uses this as the optimal clustering number instead of via
+    the stability analysis.
 
     Next, this estimates the optimal number of clusters in the CCA
     representation of the data.
@@ -394,20 +397,29 @@ def estimate_biotypes(X, y, y_names, output):
 
     # use regularized CCA to determine the optimal number of cannonical variates
     logger.info('biotyping: cannonical correlation 10-fold cross validation to find brain-behaviour mappings')
-    regs = np.array([0.01, 0.1, 1, 10, 100])
-    numCCs = np.arange(2, 11)
-    cca = rcca.CCACrossValidate(numCCs=numCCs, regs=regs, verbose=True)
+    regs = np.logspace(1, 6, 6)
+    numCCs = np.arange(2, 10)
+    cca = rcca.CCACrossValidate(numCCs=numCCs, regs=regs, numCV=10, verbose=True)
     cca.train([X_red, y])
     n_best_cc = cca.best_numCC
+    comps = cca.comps[0] # components found in X
+    plot_biotype_clusters(comps, os.path.join(output, 'xbrain_biotype_clusters.pdf'))
 
     # estimate number of clusters by maximizing cluster quality criteria
-    comps = cca.comps[0] # components found in X
-    clst_score = np.zeros(18)
-    clst_tests = np.array(range(2,20))
-    for i, n_clst in enumerate(clst_tests):
-        clst_score[i] = cluster_stability(comps, n_clst)
-    target = np.min(clst_score) # minimize instability
-    n_best_clst = clst_tests[clst_score == target][0]
+    if not k:
+        logger.debug('estimating n biotypes via stability analysis')
+        clst_score = np.zeros(18)
+        clst_tests = np.array(range(2,20))
+        for i, n_clst in enumerate(clst_tests):
+            clst_score[i] = cluster_stability(comps, n_clst)
+        target = np.min(clst_score) # minimize instability
+        n_best_clst = clst_tests[clst_score == target][0]
+        plot_n_cluster_estimation(clst_score, clst_tests,
+            os.path.join(output, 'xbrain_biotype_n_cluster_estimation.pdf'))
+    else:
+        logger.debug('using defined n_biotypes: {}'.format(k))
+        n_best_clst = k
+
     clst = AgglomerativeClustering(n_clusters=n_best_clst)
     clst.fit(comps)
     clst_labels = clst.labels_
@@ -437,10 +449,6 @@ def estimate_biotypes(X, y, y_names, output):
         y_names = y_names,
         cca = cca)
     mdl = np.load(os.path.join(output, 'xbrain_biotype.npz'))
-
-    plot_biotype_clusters(comps, os.path.join(output, 'xbrain_biotype_clusters.pdf'))
-    plot_n_cluster_estimation(clst_score, clst_tests,
-        os.path.join(output, 'xbrain_biotype_n_cluster_estimation.pdf'))
 
     return mdl
 
@@ -583,6 +591,10 @@ def find_outliers(y, output):
     null_outliers_pct = 0.025 # 2.5% of data expected below 2 sd
     real_outliers_pct = len(np.where(y < null_cutoff)[0]) / float(len(y))
     diff_outliers_pct = real_outliers_pct - null_outliers_pct
+    if not utils.is_probability(diff_outliers_pct):
+        logger.error('auto-found probability is invalid: {}, should be [0,1]'.format(diff_outliers_pct))
+        logger.error('this likely means your y distribution is gaussian. try running with a set cutoff in diagnostics mode to confirm.')
+        sys.exit(1)
     diff_cutoff = np.percentile(y, diff_outliers_pct*100)
 
     y_outliers = copy(y)
@@ -868,6 +880,10 @@ def diagnostics(X_train, X_test, y_train, y_test, y_train_raw, output):
     logger.debug('plotting hierarchical clustering of the feature matrix X')
     plot_clusters(X_train, os.path.join(output, 'xbrain_X_clusters.pdf'))
 
+    # TODO: significance test is high even if explained variance is very low.
+    #       double check everything, and evaluate utilitiy of such a test for
+    #       classification (when the noise level is so high, SVM etc gets
+    #       bamboozled).
     # use MDMR to find a relationship between the X matrix and all y predictors
     # broken -- need to go over matrix transpositions...
     #F, F_null, v = mdmr(y_train_raw, X_train, method='euclidean')
@@ -901,8 +917,6 @@ def diagnostics(X_train, X_test, y_train, y_test, y_train_raw, output):
     plt.xlabel('n features retained')
     plt.ylabel('F1 score (macro)')
     plt.savefig(os.path.join(output, 'xbrain_overfit-analysis.pdf'))
-
-    sys.exit()
 
 
 def plot_pcs(X, y, output):
