@@ -14,6 +14,7 @@ Options:
     --dynamics=DYNA        A list of timeseries for dynamic connectivity.
     --biotype-conn=BIOC    A list of timeseries for biotyping using static connectivity.
     --biotype-xcorr=BIOX   A list of timeseries for biotyping using intersubject correlations.
+    --biotype-n=N          Number of biotypes to find (optional: can be done automatically).
     --statmaps=STATS       A list of statmaps .nii.gz (3D) predictors.
     --raw=RAW              A list of column names in database as predictors.
     --predict=PREDICT      A list of column names in database to predict.
@@ -214,6 +215,7 @@ def main():
     biotype_conn  = arguments['--biotype-conn']
     biotype_xcorr = arguments['--biotype-xcorr']
     biotype_mdl   = arguments['--biotype-model']
+    biotype_n     = arguments['--biotype-n']
 
     # y
     predict       = arguments['--predict']
@@ -248,12 +250,9 @@ def main():
     db = load_database(database)
     output = assert_output(output)
 
-    if not diagnostics:
-        csv_info = open(os.path.join(output, 'xbrain_information.csv'), 'wb')
-        csv_results = open(os.path.join(output, 'xbrain_results.csv'), 'wb')
-        csv_hyper = open(os.path.join(output, 'xbrain_hyperparameters.csv'), 'wb')
-    else:
-        csv_info, csv_results, csv_hyper = None, None, None
+    csv_info = open(os.path.join(output, 'xbrain_information.csv'), 'wb')
+    csv_results = open(os.path.join(output, 'xbrain_results.csv'), 'wb')
+    csv_hyper = open(os.path.join(output, 'xbrain_hyperparameters.csv'), 'wb')
 
     writer(csv_info, 'xbrain run with the following inputs\n  statmaps={}\n  xcorr={}\n  connectivity={}\n  dynamics={}\n  raw={}\n  predict={}\n'.format(
             statmaps, xcorr, connectivity, dynamics, raw, predict))
@@ -298,6 +297,14 @@ def main():
         logger.error('method {} invalid, pick from {}'.format(method, methods))
         sys.exit(1)
     writer(csv_info, '  method={}\n'.format(method))
+
+    # biotype n: integer?
+    if biotype_n:
+        biotype_n = int(biotype_n)
+        if biotype_n < 2:
+            logger.error('number of biotypes to be found must be at least 2, recieved {}'.format(biotype_n))
+            sys.exit(1)
+        writer(csv_info, '  biotype-n={}\n'.format(biotype_n))
 
     # y_cutoff: percentile?
     if method == 'ysplit' and y_cutoff != 'auto':
@@ -422,7 +429,7 @@ def main():
                 sys.exit(1)
         # biotype the full sample
         else:
-            biotype_mdl = stats.estimate_biotypes(X_bio, y, predict, output)
+            biotype_mdl = stats.estimate_biotypes(X_bio, y, predict, output, k=biotype_n)
 
         # save the biotypes in the database (for post hoc analysis)
         db['biotype'] = biotype_mdl['clusters']
@@ -559,14 +566,15 @@ def main():
             n_select = int(round(select*X_train.shape[0]))
             X_train, X_test = stats.feature_select(X_train, y_train, X_test, n=n_select)
 
-        if diagnostics:
+        # diagnostics are run on the first fold only
+        if diagnostics and count == 1:
             if len(y_raw.shape) == 1:
                 y_raw = y_raw[train_idx]
             else:
                 y_raw = y_raw[train_idx, :]
-            # this terminates execution
             stats.diagnostics(X_train, X_test, y_train, y_test, y_raw, output)
 
+        # TODO: for large numbers of features, impossible to read output
         stats.plot_X(X_train, os.path.join(output, 'xbrain_X_test-vs-train.pdf'), X2=X_test)
 
         # control experiment: y is random, classifier should perform at chance
