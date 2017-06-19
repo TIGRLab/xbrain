@@ -397,9 +397,12 @@ def estimate_biotypes(X, y, y_names, output, k=None):
 
     # use regularized CCA to determine the optimal number of cannonical variates
     logger.info('biotyping: cannonical correlation 10-fold cross validation to find brain-behaviour mappings')
-    regs = np.logspace(1, 6, 6)
+    #regs = np.logspace(1, 6, 6)
+    #regs = np.logspace(-3, 6, 10)
+    #regs = np.array([1000000])
+    regs = np.array([1000])
     numCCs = np.arange(2, 10)
-    cca = rcca.CCACrossValidate(numCCs=numCCs, regs=regs, numCV=10, verbose=True)
+    cca = rcca.CCACrossValidate(numCCs=numCCs, regs=regs, numCV=5, verbose=True)
     cca.train([X_red, y])
     n_best_cc = cca.best_numCC
     comps = cca.comps[0] # components found in X
@@ -558,6 +561,15 @@ def r_to_d(R):
 def standardize(X):
     """z-scores each column of X."""
     return((X - X.mean(axis=0)) / X.std(axis=0))
+
+
+def standardize_by_group(X, labels, group):
+    """z-scores each column of X by the mean and standard deviation of group."""
+    assert(X.shape[0] == len(labels))
+    idx = np.where(labels == group)[0]
+    X_group_mean = X[idx, :].mean(axis=0)
+    X_group_std = X[idx, :].std(axis=0)
+    return((X - X_group_mean) / X_group_std)
 
 
 def gauss(x, *p):
@@ -827,7 +839,10 @@ def make_classes(y, target_group):
     y = le.transform(y)
 
     if target_group >= 0:
-        target_group = int(np.where(target_group == le.classes_)[0][0]) # ugly type gymnastics should be fixed
+        try:
+            target_group = int(np.where(target_group == le.classes_)[0][0]) # ugly type gymnastics should be fixed
+        except:
+            target_group = int(np.where(int(target_group) == le.classes_)[0][0]) # ugly type gymnastics should be fixed
 
     return(y, target_group)
 
@@ -1102,11 +1117,15 @@ def plot_biotype_X_stat_loadings(mdl, X, mask, output):
 
         output_list.append(atlas_corrs)
 
-    # save ROI connectivity correlations per component to nifti
+    # save ROI connectivity correlations per component to nifti / cifti
     output_nii = np.stack(output_list, axis=3)
-    output_nii = nib.nifti1.Nifti1Image(output_nii, nii.affine, header=nii.header)
-    output_nii.update_header()
-    output_nii.header_class(extensions=())
+    if nii.header_class == nib.nifti2.Nifti2Header:
+        output_nii = nib.nifti2.Nifti2Image(output_nii, nii.affine, header=nii.header)
+    else:
+        output_nii = nib.nifti1.Nifti1Image(output_nii, nii.affine, header=nii.header)
+        output_nii.update_header()
+        output_nii.header_class(extensions=())
+
     output_nii.to_filename(output)
 
 

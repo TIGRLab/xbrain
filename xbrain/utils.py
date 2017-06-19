@@ -3,6 +3,7 @@
 import pickle
 import numpy as np
 import pandas as pd
+import nibabel as nib
 import os, sys
 import logging
 from copy import copy
@@ -133,6 +134,78 @@ def gather_columns(db, columns):
             X = np.vstack((X, tmp))
 
     return(X.T)
+
+
+def read_statmap(db, row, col, roi_mask):
+    """
+    Return numpy array of the timeseries defined in the ith row, named column
+    of input database db.
+    """
+    # in the single subject case
+    if len(db.shape) == 1:
+        statmap_file = db[col]
+    # in the multi subject case
+    else:
+        statmap_file = db.iloc[row][col]
+
+    logger.debug('reading statmap file {}'.format(statmap_file))
+    statmap = nib.load(statmap_file).get_data()
+    roi_file = nib.load(roi_mask).get_data()
+
+    try:
+        assert(statmap.shape == roi_file.shape)
+    except AssertionError:
+        logger.error('input statmap dims {} does not match ROI mask {}'.format(statmap.shape, roi_file.shape))
+        sys.exit(1)
+
+    # take all non-zero voxels as an ROI, init output x
+    rois = np.unique(roi_file)
+    rois = rois[rois > 0]
+    x = np.zeros(len(rois))
+
+    # take mean within each ROI
+    for i, roi in enumerate(rois):
+        idx = np.where(roi_file == roi)
+        x[i] = np.mean(statmap[idx])
+
+    return(x)
+
+
+def gather_stats(db, statmaps, roi_mask):
+    """
+    Calculates mean stat within each roi of the supplied mask of each
+    participant in the db and returned as the feature matrix X.
+    """
+    db_idx = db.index
+    n = len(db)
+    for i, column in enumerate(statmaps):
+
+        # loop through subjects
+        for j, subj in enumerate(db_idx):
+            try:
+                stat = read_statmap(db, j, column, roi_mask)
+            except IOError as e:
+                logger.error(e)
+                sys.exit(1)
+
+            logger.debug('stat data: n_rois={}'.format(stat.shape[0]))
+
+            # for the first timeseries, initialize the output array
+            if j == 0:
+                stats = np.zeros((n, stat.shape[0]))
+
+            stats[j, :] = stat
+
+        # horizontally concatenate corrs into X (samples X features)
+        if i == 0:
+            X = stats
+        else:
+            X = np.hstack((X, stats))
+
+    logger.debug('stats feature matrix shape: {}'.format(X.shape))
+
+    return X
+
 
 
 def make_dv_groups(y, cutoff):
