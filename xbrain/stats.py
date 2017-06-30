@@ -146,12 +146,12 @@ def classify(X_train, X_test, y_train, y_test, method, output):
     lb = LabelBinarizer()
     lb.fit(y_train)
     # AUC only works if there is more than one class in y
-    if len(np.unique(y_test)) > 1:
+    try:
         auc = (roc_auc_score(lb.transform(y_train), lb.transform(y_train_pred), average='macro'),
                roc_auc_score(lb.transform(y_test), lb.transform(y_test_pred), average='macro'),
                roc_auc_score(lb.transform(y_train), lb.transform(y_train_pred), average='micro'),
                roc_auc_score(lb.transform(y_test), lb.transform(y_test_pred), average='micro'))
-    else:
+    except:
         auc = (0, 0, 0, 0)
 
     logger.info('TRAIN: confusion matrix\n{}'.format(confusion_matrix(y_train, y_train_pred)))
@@ -396,13 +396,13 @@ def estimate_biotypes(X, y, y_names, output, k=None):
     X_red = X[:, idx]
 
     # use regularized CCA to determine the optimal number of cannonical variates
-    logger.info('biotyping: cannonical correlation 10-fold cross validation to find brain-behaviour mappings')
+    logger.info('biotyping: cannonical correlation 3-fold cross validation to find brain-behaviour mappings')
     #regs = np.logspace(1, 6, 6)
-    #regs = np.logspace(-3, 6, 10)
+    #regs = np.logspace(-1, 6, 10)
     #regs = np.array([1000000])
     regs = np.array([1000])
     numCCs = np.arange(2, 10)
-    cca = rcca.CCACrossValidate(numCCs=numCCs, regs=regs, numCV=5, verbose=True)
+    cca = rcca.CCACrossValidate(numCCs=numCCs, regs=regs, numCV=3, verbose=True)
     cca.train([X_red, y])
     n_best_cc = cca.best_numCC
     comps = cca.comps[0] # components found in X
@@ -1107,15 +1107,27 @@ def plot_biotype_X_stat_loadings(mdl, X, mask, output):
     output_list = []
     for i in range(correlations.shape[1]):
         # copy of input atlas to store statistics
-        atlas_corrs = np.zeros(nii_data.shape)
+        #atlas_corrs = np.zeros(nii_data.shape)
+        atlas_corrs_pos = np.zeros(nii_data.shape)
+        atlas_corrs_neg = np.zeros(nii_data.shape)
 
         # load stat values into ROI mask
         roi_conns = np.zeros((len(rois)))
-        roi_conns = correlations[:, i]
-        for j, roi in enumerate(rois):
-            atlas_corrs[nii_data == roi] = roi_conns[j]
+        roi_conns_pos = np.zeros(roi_conns.shape)
+        roi_conns_neg = np.zeros(roi_conns.shape)
 
-        output_list.append(atlas_corrs)
+        roi_conns = correlations[:, i]
+        roi_conns_pos[roi_conns >= 0] = roi_conns[roi_conns >= 0]
+        roi_conns_neg[roi_conns < 0] = roi_conns[roi_conns < 0]
+
+        for j, roi in enumerate(rois):
+            #atlas_corrs[nii_data == roi] = roi_conns[j]
+            atlas_corrs_pos[nii_data == roi] = roi_conns_pos[j]
+            atlas_corrs_neg[nii_data == roi] = roi_conns_neg[j]
+
+        output_list.append(atlas_corrs_pos)
+        output_list.append(atlas_corrs_neg)
+        #output_list.append(atlas_corrs)
 
     # save ROI connectivity correlations per component to nifti / cifti
     output_nii = np.stack(output_list, axis=3)
@@ -1146,7 +1158,7 @@ def plot_biotype_cluster_scores(mdl, output):
 
 def plot_biotype_clusters(comps, output):
     """uses hierarchical clustering (ward's method) to show biotypes"""
-    sns.clustermap(comps, method='ward', metric='euclidean')
+    sns.clustermap(comps, method='ward', metric='euclidean', col_cluster=False)
     sns.plt.savefig(output)
     sns.plt.close()
 
